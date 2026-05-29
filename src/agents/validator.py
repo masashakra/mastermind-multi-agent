@@ -126,7 +126,12 @@ class ValidatorAgent(BaseAgent):
 
             if constraints.get("correct_positions"):
                 for pos_info in constraints["correct_positions"]:
-                    constraint_lines.append(f"- LOCKED: position {pos_info['position']} → {pos_info['color']}")
+                    # Handle both dict and string formats
+                    if isinstance(pos_info, dict):
+                        constraint_lines.append(f"- LOCKED: position {pos_info['position']} → {pos_info['color']}")
+                    else:
+                        # String format
+                        constraint_lines.append(f"- LOCKED: {pos_info}")
 
             if constraints.get("correct_colors_wrong_position"):
                 for color in constraints["correct_colors_wrong_position"]:

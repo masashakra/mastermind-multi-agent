@@ -65,6 +65,28 @@ RESPOND WITH ONLY THIS JSON:
         if "error" in result:
             raise ValueError(f"Analyzer JSON parse failed: {result.get('error')}")
 
+        # ENHANCEMENT: Add structured constraint format for Proposer
+        # Convert analyzed colors into clear constraint statements
+        constraints_enhanced = list(result.get("constraints", []))
+
+        # Add explicit impossible color statements
+        for color in result.get("impossible_colors", []):
+            constraints_enhanced.append(f"{color} is IMPOSSIBLE - not in code")
+
+        # Add explicit correct color statements (wrong position)
+        for color in result.get("correct_colors_wrong_position", []):
+            constraints_enhanced.append(f"{color} exists in code but not at current position")
+
+        # Add explicit locked position statements
+        for position_item in result.get("correct_positions", []):
+            # Handle both dict and string formats
+            if isinstance(position_item, dict):
+                constraints_enhanced.append(f"Position {position_item.get('position')}: {position_item.get('color')} (LOCKED)")
+            elif isinstance(position_item, str):
+                # Already in string format, add the lock indicator
+                constraints_enhanced.append(f"{position_item} (LOCKED)")
+
+        result["constraints"] = constraints_enhanced
         return result
 
     def process(

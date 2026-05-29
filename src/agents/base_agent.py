@@ -5,6 +5,7 @@
 
 import json
 import os
+import time
 from typing import Dict, Any, Optional
 from abc import ABC, abstractmethod
 import requests
@@ -55,7 +56,7 @@ class BaseAgent(ABC):
             self.llm = {
                 "api_key": groq_key,
                 "type": "groq",
-                "model": "mixtral-8x7b-32768"  # Fast, high quality
+                "model": "llama-3.1-8b-instant"  # Fast, currently available
             }
         elif self.provider == "ollama":
             try:
@@ -89,6 +90,10 @@ class BaseAgent(ABC):
             RuntimeError: If LLM call fails
         """
         self.call_count += 1
+
+        # Rate limiting for Groq API (free tier is strict: ~30 req/min = 2 sec per request)
+        if self.provider == "groq":
+            time.sleep(2.0)
 
         try:
             if self.provider == "kaggle":
