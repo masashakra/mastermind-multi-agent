@@ -188,20 +188,11 @@ Respond ONLY with valid JSON:
   "estimated_remaining": "~10-20 possible codes"
 }}"""
 
-        # First, use simple heuristics to identify definite locked positions
-        locked_from_logic = self._find_locked_positions_by_logic(
-            last_guess, correct_positions, previous_guesses
-        )
-
         try:
             response = self.call_llm(prompt)
             result = self.parse_json_response(response)
         except Exception as e:
             raise RuntimeError(f"Analyzer LLM call failed: {str(e)}")
-
-        # If LLM found locked positions, use those; otherwise use logical analysis
-        if not result.get("correct_positions") and locked_from_logic:
-            result["correct_positions"] = locked_from_logic
 
         # Validate response
         if "error" in result:
