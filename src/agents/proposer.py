@@ -185,12 +185,7 @@ Respond ONLY with valid JSON (no markdown):
             response = self.call_llm(prompt)
             result = self.parse_json_response(response)
         except Exception as e:
-            # LLM failed - use heuristic fallback
-            result = self._generate_heuristic_guess(
-                strategy, constraints_text, available_colors, num_pegs, previous_guesses
-            )
-            result["llm_failed"] = True
-            result["error_reason"] = str(e)
+            raise RuntimeError(f"Proposer LLM call failed: {str(e)}")
 
         # Extract locked positions from constraints for validation
         locked_positions = {}
@@ -284,88 +279,6 @@ Respond ONLY with valid JSON (no markdown):
                     return result
 
         return result
-
-    def _generate_heuristic_guess(
-        self,
-        strategy: str,
-        constraints_text: str,
-        available_colors: List[str],
-        num_pegs: int,
-        previous_guesses: List[List[str]] = None
-    ) -> Dict[str, Any]:
-        """Generate guess using simple heuristics when LLM fails.
-
-        Strategy:
-        1. Identify locked positions from constraints
-        2. For unknown positions: use colors not yet tested (if exploring) or test new combinations
-        3. Avoid duplicate colors in the same guess (unless testing for repeats)
-        4. Ensure no constraint violations
-
-        Args:
-            strategy: Strategy description (for context)
-            constraints_text: Constraints as text
-            available_colors: Valid colors
-            num_pegs: Number of pegs
-            previous_guesses: Previous guesses
-
-        Returns:
-            Guess proposal dict
-        """
-        # Extract locked positions
-        locked_positions = {}
-        if constraints_text:
-            for line in constraints_text.split("\n"):
-                if "locked at position" in line.lower():
-                    parts = line.split("locked at position")
-                    if len(parts) == 2:
-                        color = parts[0].strip().lower()
-                        try:
-                            pos = int(parts[1].strip())
-                            locked_positions[pos] = color
-                        except (ValueError, IndexError):
-                            pass
-
-        # Build guess
-        guess = [None] * num_pegs
-
-        # Fill locked positions
-        for pos, color in locked_positions.items():
-            if pos < num_pegs:
-                guess[pos] = color
-
-        # Fill remaining positions - AVOID DUPLICATES in normal cases
-        tested_colors = set()
-        if previous_guesses:
-            for prev_guess in previous_guesses:
-                tested_colors.update(prev_guess)
-
-        available_new = [c for c in available_colors if c not in tested_colors]
-        used_in_guess = set(locked_positions.values())
-
-        for pos in range(num_pegs):
-            if guess[pos] is None:
-                # Try new colors first (different from what we've used in this guess)
-                available_for_pos = [c for c in available_new if c not in used_in_guess]
-                if available_for_pos:
-                    color = available_for_pos[0]
-                    available_new.remove(color)
-                    guess[pos] = color
-                    used_in_guess.add(color)
-                elif available_new:
-                    # Fall back to tested colors (these might be the ones that exist)
-                    color = available_new.pop(0)
-                    guess[pos] = color
-                    used_in_guess.add(color)
-                else:
-                    # Last resort: any color (but prefer one we know exists if possible)
-                    guess[pos] = random.choice(available_colors)
-
-        return {
-            "proposed_guess": guess,
-            "justification": "Heuristic: locked positions + new colors + avoid duplicates",
-            "expected_outcome": "Test unknown positions with variety",
-            "is_heuristic": True
-        }
 
     def process(
         self,

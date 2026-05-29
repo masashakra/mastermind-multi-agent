@@ -145,84 +145,14 @@ Output ONLY with valid JSON:
   "confidence": 0.75
 }}"""
 
-        try:
-            response = self.call_llm(prompt)
-            result = self.parse_json_response(response)
-        except Exception as e:
-            # LLM failed - use heuristic strategy
-            result = self._generate_heuristic_strategy(guess_history, difficulty)
-            result["llm_failed"] = True
-            result["error_reason"] = str(e)
+        response = self.call_llm(prompt)
+        result = self.parse_json_response(response)
 
-        # Validate response
+        # If JSON parsing failed, raise error (no fallback)
         if "error" in result:
-            return {
-                "phase": "EXPLORATION" if not guess_history else "REFINEMENT",
-                "analysis": "Could not process feedback",
-                "strategy": "Continue with diverse colors" if not guess_history else "Test new colors at unknown positions",
-                "reasoning": "Fallback strategy",
-                "confidence": 0.5,
-                "parse_error": result.get("error")
-            }
+            raise ValueError(f"Strategist JSON parse failed: {result.get('error')}")
 
         return result
-
-    def _generate_heuristic_strategy(
-        self, guess_history: List[Dict[str, Any]], difficulty: str
-    ) -> Dict[str, Any]:
-        """Generate strategy using simple heuristics when LLM fails.
-
-        Rules:
-        - Round 1: EXPLORATION - test diverse colors
-        - Rounds 2+: Look at feedback trend
-          - If colors found < 2: still CONSTRAINT_BUILDING
-          - If colors found ≥ 3: REFINEMENT
-          - If positions locked ≥ 3: CONFIRMATION
-
-        Args:
-            guess_history: List of previous guesses with feedback
-            difficulty: "easy", "medium", or "hard"
-
-        Returns:
-            Strategy dict
-        """
-        if not guess_history:
-            return {
-                "phase": "EXPLORATION",
-                "analysis": "First guess - test diverse colors",
-                "strategy": "Test 4 diverse common colors to find which ones exist",
-                "reasoning": "Starting from scratch - need to know which colors are relevant",
-                "confidence": 0.5,
-                "is_heuristic": True
-            }
-
-        # Analyze feedback trends
-        latest = guess_history[-1]
-        feedback = latest.get("feedback", {})
-        total_colors = feedback.get("correct_pegs", 0)
-        locked_count = feedback.get("correct_positions", 0)
-
-        if total_colors < 2:
-            phase = "EXPLORATION"
-            strategy = "Test more diverse colors to find what exists"
-        elif total_colors >= 3 and locked_count < 2:
-            phase = "CONSTRAINT_BUILDING"
-            strategy = "Test the known colors in different positions to find which are locked"
-        elif locked_count >= 3:
-            phase = "CONFIRMATION"
-            strategy = "Almost there - just fill in the final position(s)"
-        else:
-            phase = "REFINEMENT"
-            strategy = "Find remaining colors and their positions"
-
-        return {
-            "phase": phase,
-            "analysis": f"Found {total_colors} colors, {locked_count} in correct positions",
-            "strategy": strategy,
-            "reasoning": f"Heuristic based on feedback pattern: {total_colors}/{locked_count}",
-            "confidence": 0.6,
-            "is_heuristic": True
-        }
 
     def _format_feedback(self, guess_history: List[Dict[str, Any]]) -> str:
         """Format guess history for prompt."""

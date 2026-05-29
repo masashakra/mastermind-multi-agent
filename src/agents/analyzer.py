@@ -197,12 +197,7 @@ Respond ONLY with valid JSON:
             response = self.call_llm(prompt)
             result = self.parse_json_response(response)
         except Exception as e:
-            # LLM failed - use heuristic analysis
-            result = self._generate_heuristic_analysis(
-                last_guess, correct_pegs, correct_positions, previous_guesses
-            )
-            result["llm_failed"] = True
-            result["error_reason"] = str(e)
+            raise RuntimeError(f"Analyzer LLM call failed: {str(e)}")
 
         # If LLM found locked positions, use those; otherwise use logical analysis
         if not result.get("correct_positions") and locked_from_logic:
@@ -277,98 +272,6 @@ Respond ONLY with valid JSON:
                 result["constraints"].append(f"{color} exists but wrong position")
 
         return result
-
-    def _generate_heuristic_analysis(
-        self,
-        last_guess: List[str],
-        correct_pegs: int,
-        correct_positions: int,
-        previous_guesses: List[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Generate analysis using simple heuristics when LLM fails.
-
-        Conservative approach:
-        - Only report locked positions if they changed from previous guess
-        - Count misplaced as: correct_pegs - correct_positions
-        - Report impossible colors conservatively
-
-        Args:
-            last_guess: Current guess
-            correct_pegs: Total colors that exist
-            correct_positions: Colors in correct positions
-            previous_guesses: Previous guesses for comparison
-
-        Returns:
-            Analysis dict
-        """
-        # Find locked by position change
-        locked = self._find_locked_positions_by_logic(last_guess, correct_positions, previous_guesses)
-
-        # Misplaced count = total - locked
-        misplaced_count = correct_pegs - correct_positions
-        misplaced = last_guess[:misplaced_count] if misplaced_count > 0 else []
-
-        # Impossible: colors in THIS guess that shouldn't be here
-        # (conservative - only mark if clear feedback says so)
-        impossible = []
-        if correct_pegs == 0:
-            # All colors in this guess are impossible
-            impossible = last_guess
-
-        constraints = []
-        for pos_dict in locked:
-            constraints.append(f"{pos_dict['color']} locked at position {pos_dict['position']}")
-        for color in misplaced:
-            constraints.append(f"{color} exists but wrong position")
-
-        return {
-            "correct_positions": locked,
-            "correct_colors_wrong_position": misplaced,
-            "impossible_colors": impossible,
-            "constraints": constraints,
-            "estimated_remaining": f"~{max(1, 10 - len(locked))} possibilities",
-            "is_heuristic": True
-        }
-
-    def _find_locked_positions_by_logic(
-        self,
-        last_guess: List[str],
-        expected_locked: int,
-        previous_guesses: List[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        """Find locked positions using simple, robust logic.
-
-        A position is likely locked if:
-        1. It has a NEW color (never appeared at that position before)
-        2. Expected locked count > 0 (feedback says some positions are correct)
-
-        Args:
-            last_guess: Current guess
-            expected_locked: Number of positions that should be locked (from feedback)
-            previous_guesses: List of previous guesses
-
-        Returns:
-            List of [{"position": int, "color": str}, ...]
-        """
-        if not previous_guesses or expected_locked == 0:
-            return []
-
-        locked = []
-        if previous_guesses:
-            prev_guess = previous_guesses[-1].get("guess", [])
-            for pos in range(len(last_guess)):
-                color_now = last_guess[pos]
-                color_before = prev_guess[pos] if pos < len(prev_guess) else None
-
-                # If position changed to a new color, it's a candidate for being locked
-                if color_now != color_before:
-                    locked.append({"position": pos, "color": color_now})
-
-                    # Stop when we've found enough
-                    if len(locked) >= expected_locked:
-                        return locked[:expected_locked]
-
-        return locked
 
     def process(
         self,
