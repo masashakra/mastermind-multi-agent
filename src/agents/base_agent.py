@@ -47,6 +47,16 @@ class BaseAgent(ABC):
             if not kaggle_url:
                 raise ValueError("KAGGLE_URL environment variable not set")
             self.llm = {"url": kaggle_url, "type": "kaggle"}
+        elif self.provider == "groq":
+            # Groq API - OpenAI compatible
+            groq_key = os.getenv("GROQ_API_KEY")
+            if not groq_key:
+                raise ValueError("GROQ_API_KEY environment variable not set")
+            self.llm = {
+                "api_key": groq_key,
+                "type": "groq",
+                "model": "mixtral-8x7b-32768"  # Fast, high quality
+            }
         elif self.provider == "ollama":
             try:
                 from langchain_ollama import OllamaLLM
@@ -94,6 +104,22 @@ class BaseAgent(ABC):
                 response.raise_for_status()
                 result = response.json()
                 return result.get("response", "")
+            elif self.provider == "groq":
+                # Groq API - OpenAI compatible
+                response = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {self.llm['api_key']}"},
+                    json={
+                        "model": self.llm["model"],
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 1024,
+                        "temperature": 0.7
+                    },
+                    timeout=30
+                )
+                response.raise_for_status()
+                result = response.json()
+                return result["choices"][0]["message"]["content"]
             elif self.provider == "ollama":
                 # OllamaLLM uses invoke() method
                 response = self.llm.invoke(prompt)
