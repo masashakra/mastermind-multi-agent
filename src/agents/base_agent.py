@@ -2,6 +2,7 @@
 # Abstract base for all agents (Strategist, Analyzer, Proposer, Validator)
 # Handles LLM calls, error handling, response parsing
 # Supports Kaggle (primary), Ollama (local), or Claude API
+# Uses A2A protocol for agent-to-agent communication
 
 import json
 import os
@@ -9,6 +10,7 @@ import time
 from typing import Dict, Any, Optional
 from abc import ABC, abstractmethod
 import requests
+from communication.protocol import A2ACommunicationLayer, A2AMessage
 
 
 class BaseAgent(ABC):
@@ -23,15 +25,17 @@ class BaseAgent(ABC):
     Subclasses implement specific agent roles.
     """
 
-    def __init__(self, name: str, model: str = "mistral-7b", provider: str = "ollama"):
+    def __init__(self, name: str, model: str = "mistral-7b", provider: str = "ollama", comm_layer: Optional[A2ACommunicationLayer] = None):
         """Initialize base agent.
 
         Args:
             name: Agent name (e.g., "Strategist", "Analyzer")
             model: Model identifier (e.g., "mistral-7b" for Ollama, "claude-3-sonnet" for Claude)
             provider: "ollama" (dev) or "claude" (final)
+            comm_layer: A2A communication layer for agent-to-agent interaction
         """
         self.name = name
+        self.agent_id = name.lower()  # Unique agent identifier
         self.model = model
         self.provider = provider
         self.llm = None
@@ -39,6 +43,11 @@ class BaseAgent(ABC):
         self.call_count = 0
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+
+        # A2A Communication
+        self.comm_layer = comm_layer
+        if self.comm_layer:
+            self.comm_layer.register_agent(self.agent_id, self)
 
     def _initialize_llm(self) -> None:
         """Initialize LLM client based on provider."""
@@ -179,6 +188,67 @@ class BaseAgent(ABC):
             "raw_response": response[:200]  # First 200 chars for debugging
         }
 
+    def send_request(
+        self,
+        receiver_id: str,
+        action: str,
+        payload: Dict[str, Any]
+    ) -> A2AMessage:
+        """Send a request to another agent via A2A protocol.
+
+        Args:
+            receiver_id: Target agent ID
+            action: Action to request
+            payload: Request data
+
+        Returns:
+            Message object
+        """
+        if not self.comm_layer:
+            raise RuntimeError("Communication layer not initialized")
+
+        return self.comm_layer.send_request(
+            sender_id=self.agent_id,
+            receiver_id=receiver_id,
+            action=action,
+            payload=payload
+        )
+
+    def send_response(
+        self,
+        receiver_id: str,
+        correlation_id: str,
+        payload: Dict[str, Any],
+        status: str = "success"
+    ) -> A2AMessage:
+        """Send a response to another agent via A2A protocol.
+
+        Args:
+            receiver_id: Target agent ID
+            correlation_id: Links to original request
+            payload: Response data
+            status: success or error
+
+        Returns:
+            Message object
+        """
+        if not self.comm_layer:
+            raise RuntimeError("Communication layer not initialized")
+
+        return self.comm_layer.send_response(
+            sender_id=self.agent_id,
+            receiver_id=receiver_id,
+            correlation_id=correlation_id,
+            payload=payload,
+            status=status
+        )
+
+    def get_messages(self) -> list:
+        """Get all messages for this agent."""
+        if not self.comm_layer:
+            return []
+        return self.comm_layer.get_agent_messages(self.agent_id)
+
     def get_stats(self) -> Dict[str, Any]:
         """Get agent statistics.
 
@@ -187,6 +257,7 @@ class BaseAgent(ABC):
         """
         return {
             "agent_name": self.name,
+            "agent_id": self.agent_id,
             "call_count": self.call_count,
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,

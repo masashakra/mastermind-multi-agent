@@ -4,8 +4,9 @@
 # Input: guess history + feedback. Output: strategy JSON (analysis, strategy, reasoning)
 
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .base_agent import BaseAgent
+from communication.protocol import A2ACommunicationLayer
 
 
 class StrategistAgent(BaseAgent):
@@ -17,8 +18,8 @@ class StrategistAgent(BaseAgent):
     Output: JSON with analysis, strategy, and reasoning
     """
 
-    def __init__(self, provider: str = "ollama"):
-        super().__init__(name="Strategist", provider=provider)
+    def __init__(self, provider: str = "ollama", comm_layer: Optional[A2ACommunicationLayer] = None):
+        super().__init__(name="Strategist", provider=provider, comm_layer=comm_layer)
 
     def propose_strategy(self, guess_history: List[Dict[str, Any]], difficulty: str) -> Dict[str, Any]:
         """Propose strategy for next guess(es).

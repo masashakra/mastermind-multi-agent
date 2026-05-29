@@ -3,8 +3,9 @@
 # Checks format, validates colors, detects duplicates/repeats
 # Input: proposed guess + metadata. Output: validation JSON (is_valid, errors, ready_to_submit)
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .base_agent import BaseAgent
+from communication.protocol import A2ACommunicationLayer
 
 
 class ValidatorAgent(BaseAgent):
@@ -16,8 +17,8 @@ class ValidatorAgent(BaseAgent):
     Output: JSON with validation result and any errors
     """
 
-    def __init__(self, provider: str = "ollama"):
-        super().__init__(name="Validator", provider=provider)
+    def __init__(self, provider: str = "ollama", comm_layer: Optional[A2ACommunicationLayer] = None):
+        super().__init__(name="Validator", provider=provider, comm_layer=comm_layer)
 
     def validate_guess(
         self,

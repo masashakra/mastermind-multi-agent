@@ -2,15 +2,16 @@
 # Interprets feedback and extracts constraints
 # Input: latest guess + feedback. Output: constraint analysis JSON
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .base_agent import BaseAgent
+from communication.protocol import A2ACommunicationLayer
 
 
 class AnalyzerAgent(BaseAgent):
     """Interprets feedback and extracts constraints."""
 
-    def __init__(self, provider: str = "ollama"):
-        super().__init__(name="Analyzer", provider=provider)
+    def __init__(self, provider: str = "ollama", comm_layer: Optional[A2ACommunicationLayer] = None):
+        super().__init__(name="Analyzer", provider=provider, comm_layer=comm_layer)
 
     def analyze_feedback(
         self,
