@@ -37,30 +37,26 @@ class AnalyzerAgent(BaseAgent):
             for i, g in enumerate(previous_guesses[-3:])  # Last 3 rounds
         )
 
-        prompt = f"""SYSTEM: Analyze Mastermind game feedback.
+        prompt = f"""SYSTEM: Analyze Mastermind feedback. Be CONSERVATIVE - only identify locked positions if CERTAIN.
 
 LAST GUESS: {last_guess}
-FEEDBACK: {correct_pegs} colors exist, {correct_positions} in correct positions
+FEEDBACK: {correct_pegs} total colors exist, {correct_positions} in correct positions
+
+RULES:
+- A position is LOCKED only if the color at that position is NEW (never tested there before) AND feedback shows locked positions increased
+- If feedback is UNCHANGED from previous round, don't declare new locked positions
+- Only mark colors IMPOSSIBLE if they were in the guess but didn't help the feedback count
 
 PREVIOUS GUESSES:
 {history_text}
 
 RESPOND WITH ONLY THIS JSON:
 {{
-  "correct_positions": [{{"position": 0, "color": "red"}}],
-  "correct_colors_wrong_position": ["blue", "green"],
-  "impossible_colors": ["yellow"],
-  "constraints": ["red locked at position 0", "blue exists wrong position"],
-  "analysis": "One line summary"
-}}
-
-Example:
-{{
   "correct_positions": [],
   "correct_colors_wrong_position": ["green"],
   "impossible_colors": ["red", "blue"],
-  "constraints": ["green exists but wrong position"],
-  "analysis": "Found 1 color, position unknown"
+  "constraints": ["green exists but not at position 0"],
+  "analysis": "Found 1 color, need to test positions"
 }}"""
 
         response = self.call_llm(prompt)
