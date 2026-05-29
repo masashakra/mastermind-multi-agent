@@ -62,6 +62,9 @@ CRITICAL FEEDBACK RULES:
    - This INCLUDES the correct_positions count
    - Example: correct_pegs=3, correct_positions=1 means 3 colors exist, 1 in right place, 2 in wrong places
 3. Misplaced colors = correct_pegs - correct_positions
+4. DUPLICATE COLORS EXIST! If 4 pegs but only find 3 unique colors, one must repeat
+   - Example: Secret ['white', 'black', 'black', 'green'] = 3 unique colors, 4 pegs total
+   - The feedback might say "4 pegs correct" but there are only 3 different colors!
 
 LOCKED POSITION DETECTION (CRITICAL):
 A position can ONLY be confirmed locked if:

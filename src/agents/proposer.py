@@ -254,30 +254,34 @@ Respond ONLY with valid JSON (no markdown):
             result["locked_violations_fixed"] = locked_violations
             result["constraint_violation_fix_applied"] = True
 
-        # SANITY CHECK: Never suggest the same guess twice in a row
+        # CRITICAL CHECK: Never repeat any previous guess
         if previous_guesses and len(previous_guesses) > 0:
-            last_guess_list = previous_guesses[-1]
-            if guess == last_guess_list:
-                # Generate a different guess by varying one position
-                for attempt in range(10):
-                    # Try changing each position
-                    for pos in range(len(guess)):
-                        # Skip if position is locked
-                        if pos not in locked_positions:
-                            # Try a different color at this position
-                            available_for_pos = [c for c in available_colors if c != guess[pos]]
-                            if available_for_pos:
-                                new_guess = guess[:]
-                                new_guess[pos] = random.choice(available_for_pos)
-                                if new_guess != last_guess_list:
-                                    guess = new_guess
-                                    result["proposed_guess"] = guess
-                                    result["duplicate_guess_fixed"] = True
-                                    result["fix_reason"] = f"Avoided duplicate of round {len(previous_guesses)}"
-                                    return result
-                # If we couldn't generate a different guess, return as-is with warning
-                result["proposed_guess"] = guess
-                result["duplicate_guess_warning"] = "Could not generate different guess"
+            # Check if this guess matches ANY previous guess
+            for prev_idx, prev_guess_list in enumerate(previous_guesses):
+                if guess == prev_guess_list:
+                    # Found a duplicate! Fix it by varying one position
+                    for attempt in range(10):
+                        # Try changing each position
+                        for pos in range(len(guess)):
+                            # Skip if position is locked
+                            if pos not in locked_positions:
+                                # Try a different color at this position
+                                available_for_pos = [c for c in available_colors if c != guess[pos]]
+                                if available_for_pos:
+                                    new_guess = guess[:]
+                                    new_guess[pos] = random.choice(available_for_pos)
+                                    # Check if this new guess is unique
+                                    is_unique = all(new_guess != prev for prev in previous_guesses)
+                                    if is_unique:
+                                        guess = new_guess
+                                        result["proposed_guess"] = guess
+                                        result["duplicate_guess_fixed"] = True
+                                        result["fix_reason"] = f"Avoided duplicate of round {prev_idx + 1}"
+                                        return result
+                    # If we couldn't generate a different guess, return as-is with warning
+                    result["proposed_guess"] = guess
+                    result["duplicate_guess_warning"] = f"Could not generate different guess (duplicate of round {prev_idx + 1})"
+                    return result
 
         return result
 
@@ -294,7 +298,8 @@ Respond ONLY with valid JSON (no markdown):
         Strategy:
         1. Identify locked positions from constraints
         2. For unknown positions: use colors not yet tested (if exploring) or test new combinations
-        3. Ensure no constraint violations
+        3. Avoid duplicate colors in the same guess (unless testing for repeats)
+        4. Ensure no constraint violations
 
         Args:
             strategy: Strategy description (for context)
@@ -328,26 +333,37 @@ Respond ONLY with valid JSON (no markdown):
             if pos < num_pegs:
                 guess[pos] = color
 
-        # Fill remaining positions
+        # Fill remaining positions - AVOID DUPLICATES in normal cases
         tested_colors = set()
         if previous_guesses:
             for prev_guess in previous_guesses:
                 tested_colors.update(prev_guess)
 
         available_new = [c for c in available_colors if c not in tested_colors]
+        used_in_guess = set(locked_positions.values())
 
         for pos in range(num_pegs):
             if guess[pos] is None:
-                # Try new colors first, then fall back to any color
-                if available_new:
-                    guess[pos] = available_new.pop(0)
+                # Try new colors first (different from what we've used in this guess)
+                available_for_pos = [c for c in available_new if c not in used_in_guess]
+                if available_for_pos:
+                    color = available_for_pos[0]
+                    available_new.remove(color)
+                    guess[pos] = color
+                    used_in_guess.add(color)
+                elif available_new:
+                    # Fall back to tested colors (these might be the ones that exist)
+                    color = available_new.pop(0)
+                    guess[pos] = color
+                    used_in_guess.add(color)
                 else:
+                    # Last resort: any color (but prefer one we know exists if possible)
                     guess[pos] = random.choice(available_colors)
 
         return {
             "proposed_guess": guess,
-            "justification": "Heuristic fallback: locked positions from constraints, new colors for unknowns",
-            "expected_outcome": "Test unknown positions",
+            "justification": "Heuristic: locked positions + new colors + avoid duplicates",
+            "expected_outcome": "Test unknown positions with variety",
             "is_heuristic": True
         }
 
