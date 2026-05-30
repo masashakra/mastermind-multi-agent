@@ -102,7 +102,7 @@ class BaseAgent(ABC):
 
         # Rate limiting for Groq API (free tier is strict: ~30 req/min = 2 sec per request)
         if self.provider == "groq":
-            time.sleep(2.0)
+            time.sleep(4.0)
 
         try:
             if self.provider == "kaggle":

@@ -33,36 +33,48 @@ class ProposerAgent(BaseAgent):
         if not valid_colors:  # Safety: use all if none left
             valid_colors = available_colors
 
-        prompt = f"""SYSTEM: Generate a Mastermind guess. ONLY use colors from the available list.
+        # Build locked positions section with absolute clarity
+        locked_section = ""
+        if locked_positions:
+            locked_section = "LOCKED POSITIONS (CANNOT CHANGE - these are 100% confirmed):\n"
+            for pos in sorted(locked_positions.keys()):
+                locked_section += f"  Position {pos}: MUST be '{locked_positions[pos]}' - DO NOT CHANGE THIS\n"
+        else:
+            locked_section = "LOCKED POSITIONS: None yet\n"
+
+        prompt = f"""SYSTEM: Generate a Mastermind guess.
+
+CRITICAL RULES (FOLLOW EXACTLY):
+1. Positions 0-{num_pegs-1} that are LOCKED must stay LOCKED with the exact same color
+2. Colors not in the available list are FORBIDDEN
+3. Colors in the impossible list are FORBIDDEN
+4. Generate ONLY valid guesses
 
 STRATEGY: {strategy}
 
-CONSTRAINTS:
+CONSTRAINTS (recent discoveries):
 {constraints_text}
 
-IMPOSSIBLE COLORS (MUST NOT use): {colors_to_avoid if colors_to_avoid else "None"}
-LOCKED POSITIONS (MUST NOT CHANGE):
-{self._format_locked_positions(locked_positions)}
+{locked_section}
 
-AVAILABLE COLORS (ONLY these allowed): {valid_colors}
-PEGS NEEDED: {num_pegs}
+IMPOSSIBLE COLORS (never use): {', '.join(colors_to_avoid) if colors_to_avoid else "None"}
+AVAILABLE COLORS (only use these): {', '.join(valid_colors)}
 
-CRITICAL:
-- Every color in your guess MUST be from the available colors list above.
-- NEVER use any colors from the impossible colors list.
-- NEVER change locked positions.
+FILL IN THE BLANKS (keep locked positions exactly as shown):
+{self._build_template_from_locked(locked_positions, num_pegs, valid_colors)}
 
-RESPOND WITH ONLY THIS JSON (no markdown):
+RESPOND WITH ONLY THIS JSON (no markdown, no explanation):
 {{
-  "proposed_guess": ["color1", "color2", "color3", "color4"],
-  "justification": "one sentence reason"
-}}
-
-Example:
-{{
-  "proposed_guess": ["red", "blue", "green", "yellow"],
-  "justification": "Test diverse colors"
+  "proposed_guess": ["pos0_color", "pos1_color", "pos2_color", "pos3_color"],
+  "justification": "one sentence"
 }}"""
+
+        response = self.call_llm(prompt)
+        result = self.parse_json_response(response)
+
+        # If JSON parsing failed, raise error
+        if "error" in result:
+            raise ValueError(f"Proposer JSON parse failed: {result.get('error')}")
 
         response = self.call_llm(prompt)
         result = self.parse_json_response(response)
@@ -164,6 +176,21 @@ Example:
         for pos in sorted(locked_positions.keys()):
             lines.append(f"  Position {pos}: {locked_positions[pos]} (MUST NOT CHANGE)")
         return "\n".join(lines)
+
+    def _build_template_from_locked(self, locked_positions: Dict[int, str], num_pegs: int, available_colors: List[str]) -> str:
+        """Build a template showing locked positions that LLM must preserve.
+
+        Shows locked positions with placeholders for other positions.
+        """
+        template = []
+        for pos in range(num_pegs):
+            if pos in locked_positions:
+                # This position is LOCKED - show the exact color
+                template.append(f"Position {pos}: ['{locked_positions[pos]}' - LOCKED, DO NOT CHANGE]")
+            else:
+                # This position is open - LLM must fill it
+                template.append(f"Position {pos}: [choose from: {', '.join(available_colors)}]")
+        return "\n".join(template)
 
     def _enforce_locked_positions(
         self,

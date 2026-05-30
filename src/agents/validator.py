@@ -20,6 +20,93 @@ class ValidatorAgent(BaseAgent):
     def __init__(self, provider: str = "ollama", comm_layer: Optional[A2ACommunicationLayer] = None):
         super().__init__(name="Validator", provider=provider, comm_layer=comm_layer)
 
+    def _validate_constraints_hard(
+        self,
+        guess: List[str],
+        available_colors: List[str],
+        expected_length: int,
+        constraints: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """HARD constraint validation - reject immediately if violated.
+
+        This runs BEFORE LLM to catch constraint violations early.
+        """
+        errors = []
+        warnings = []
+
+        # Check 1: Length
+        if len(guess) != expected_length:
+            errors.append(f"Wrong length: {len(guess)} instead of {expected_length}")
+
+        # Check 2: All colors are valid
+        for i, color in enumerate(guess):
+            if color not in available_colors:
+                errors.append(f"Position {i}: '{color}' is not in available colors {available_colors}")
+
+        # Check 3: LOCKED positions must not change
+        if constraints and constraints.get("correct_positions"):
+            locked_positions = constraints["correct_positions"]
+            for lock_item in locked_positions:
+                if isinstance(lock_item, dict):
+                    pos = lock_item.get("position")
+                    color = lock_item.get("color")
+                    if pos is not None and color is not None:
+                        if pos < len(guess):
+                            if guess[pos] != color:
+                                errors.append(
+                                    f"VIOLATION: Position {pos} should be '{color}' but guess has '{guess[pos]}'"
+                                )
+                else:
+                    # String format - try to parse
+                    if "position" in str(lock_item).lower():
+                        warnings.append(f"Could not parse lock format: {lock_item}")
+
+        # Check 4: No impossible colors
+        if constraints and constraints.get("impossible_colors"):
+            impossible = constraints["impossible_colors"]
+            for i, color in enumerate(guess):
+                if color in impossible:
+                    errors.append(f"Position {i}: '{color}' is in the impossible colors list")
+
+        # Check 5: Misplaced colors must be in different positions
+        if constraints and constraints.get("correct_colors_wrong_position"):
+            misplaced = constraints["correct_colors_wrong_position"]
+            # For now, just check they exist in guess
+            for color in misplaced:
+                if color not in guess:
+                    warnings.append(f"Misplaced color '{color}' not in guess")
+
+        # Return hard validation result
+        if errors:
+            return {
+                "is_valid": False,
+                "ready_to_submit": False,
+                "errors": errors,
+                "warnings": warnings,
+                "constraint_check": {
+                    "locked_positions": "VIOLATED" if any("position" in e.lower() for e in errors) else "OK",
+                    "impossible_colors": "VIOLATED" if any("impossible" in e.lower() for e in errors) else "OK",
+                    "misplaced_colors": "OK",
+                    "format": "OK" if not any("length" in e.lower() for e in errors) else "VIOLATED"
+                },
+                "comments": f"Hard constraint violation: {errors[0]}"
+            }
+
+        # All hard constraints passed
+        return {
+            "is_valid": True,
+            "ready_to_submit": True,
+            "errors": [],
+            "warnings": warnings,
+            "constraint_check": {
+                "locked_positions": "All locked",
+                "impossible_colors": "None used",
+                "misplaced_colors": "OK",
+                "format": "Correct"
+            },
+            "comments": "Passed hard constraint validation"
+        }
+
     def validate_guess(
         self,
         guess: List[str],
@@ -116,6 +203,13 @@ class ValidatorAgent(BaseAgent):
         Returns:
             Detailed validation result from LLM
         """
+        # HARD VALIDATION: Check constraints programmatically first
+        hard_validation = self._validate_constraints_hard(
+            guess, available_colors, expected_length, constraints
+        )
+        if not hard_validation["is_valid"]:
+            # REJECT immediately if constraints violated
+            return hard_validation
         prev_guesses_str = ""
         if previous_guesses:
             prev_guesses_str = "\n".join([f"- {g}" for g in previous_guesses])
