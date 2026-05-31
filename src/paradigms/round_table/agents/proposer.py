@@ -38,31 +38,52 @@ class ProposerAgent(BaseAgent):
         colors_str = ", ".join(available_colors)
         prev_str = "\n".join([str(g) for g in previous_guesses[-3:]]) if previous_guesses else "None"
 
+        # Extract previously guessed color combos to avoid repeats
+        prev_guesses_list = [g.get("guess", g) if isinstance(g, dict) else g for g in previous_guesses]
+
         prompt = f"""{role_context}
 
 ## YOUR TASK
-Generate a guess respecting all constraints in Boss-Worker paradigm.
+Generate a NEW guess for Mastermind. You are trying to discover a secret code.
+
+RULES:
+- The secret code has exactly {num_pegs} color slots
+- Colors can repeat
+- You must use ONLY colors from the available list (exact case)
+- DO NOT repeat a previous guess exactly
+- Use the strategy and constraints to narrow down candidates
 
 STRATEGY: {strategy}
-CONSTRAINTS: {constraints_text}
-AVAILABLE COLORS: {colors_str}
-NUM PEGS: {num_pegs}
-PREVIOUS GUESSES (last 3):
+CONSTRAINTS FROM ANALYSIS: {constraints_text}
+AVAILABLE COLORS (use exact spelling): {colors_str}
+PREVIOUS GUESSES (DO NOT repeat these):
 {prev_str}
 
-Generate a new guess that respects all constraints.
+Think step by step:
+1. What does the feedback from previous guesses tell us?
+2. Which colors are eliminated? Which are confirmed?
+3. Which positions are locked?
+4. What new guess will give us the most information?
 
 OUTPUT (JSON ONLY):
 {{
-  "proposed_guess": [list of colors],
-  "reasoning": "[Why these colors]"
+  "proposed_guess": ["color1", "color2", "color3", "color4"],
+  "reasoning": "Why these colors based on constraints"
 }}"""
 
         response = self.call_llm(prompt)
         result = self.parse_json_response(response)
 
-        if "error" in result:
-            result = {"proposed_guess": available_colors[:num_pegs], "reasoning": "Default guess"}
+        if "error" in result or "proposed_guess" not in result:
+            # Fallback: pick randomly from available colors, avoiding previous guesses
+            import random
+            shuffled = available_colors.copy()
+            random.shuffle(shuffled)
+            fallback_guess = [random.choice(available_colors) for _ in range(num_pegs)]
+            # Make sure fallback is not a repeat of a previous guess
+            while fallback_guess in prev_guesses_list and len(prev_guesses_list) < 50:
+                fallback_guess = [random.choice(available_colors) for _ in range(num_pegs)]
+            result = {"proposed_guess": fallback_guess, "reasoning": "Random fallback (LLM parse failed)"}
 
         return result
 

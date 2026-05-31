@@ -61,7 +61,9 @@ OUTPUT (JSON ONLY):
         result = self.parse_json_response(response)
 
         if "error" in result:
-            result = {"proposed_guess": available_colors[:num_pegs], "reasoning": "Default guess"}
+            import random as _random
+            fallback_guess = [_random.choice(available_colors) for _ in range(num_pegs)]
+            result = {"proposed_guess": fallback_guess, "reasoning": "Random fallback (LLM parse failed)"}
 
         return result
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
