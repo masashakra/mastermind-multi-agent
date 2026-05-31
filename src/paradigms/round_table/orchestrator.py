@@ -8,10 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import time
 from typing import Dict, Any, List
 
-from core.game_engine import GameEngine
-from core.puzzle_generator import load_puzzles
+from game_engine import GameEngine
+from puzzle_generator import load_puzzles
 from communication.protocol import A2ACommunicationLayer
-from registry.registry import get_global_registry
 from paradigms.round_table.agents import (
     AnalyzerAgent,
     StrategistAgent,
@@ -46,25 +45,16 @@ class RoundTableOrchestrator:
         self.game_engine = GameEngine(puzzle["secret_code"], puzzle["difficulty"])
         self.start_time = time.time()
 
-        # A2A Communication
+        # A2A Communication (in-process only for round-table)
         self.comm_layer = A2ACommunicationLayer()
-        self.registry = get_global_registry(self.comm_layer)
 
-        # Initialize all agents as peers (no boss)
+        # Initialize all agents as peers (no boss/hierarchy)
         self.analyzer = AnalyzerAgent(provider=provider, comm_layer=self.comm_layer)
         self.strategist = StrategistAgent(provider=provider, comm_layer=self.comm_layer)
         self.proposer = ProposerAgent(provider=provider, comm_layer=self.comm_layer)
         self.validator = ValidatorAgent(provider=provider, comm_layer=self.comm_layer)
         self.logger = LoggerAgent(paradigm_name=self.paradigm)
         self.metrics = MetricsAgent(paradigm_name=self.paradigm)
-
-        # Register all agents as peers
-        self.registry.register_agent({"agent_id": "analyzer", "agent_name": "Analyzer", "agent_type": "analyzer", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "strategist", "agent_name": "Strategist", "agent_type": "strategist", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "proposer", "agent_name": "Proposer", "agent_type": "proposer", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "validator", "agent_name": "Validator", "agent_type": "validator", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "logger", "agent_name": "Logger", "agent_type": "logger", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "metrics", "agent_name": "Metrics", "agent_type": "metrics", "paradigm": self.paradigm})
 
     def run(self) -> Dict[str, Any]:
         """Run one complete puzzle with Round-Table paradigm

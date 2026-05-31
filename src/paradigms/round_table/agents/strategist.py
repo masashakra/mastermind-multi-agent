@@ -62,3 +62,10 @@ OUTPUT (JSON ONLY):
             result = {"phase": "EXPLORATION", "strategy": "Explore color space", "confidence": 0.5, "reasoning": "Default"}
 
         return result
+
+    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Process method for abstract base class compliance."""
+        return self.propose_strategy(
+            state.get("guess_history", []),
+            state.get("difficulty", "medium")
+        )

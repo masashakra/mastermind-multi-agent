@@ -64,3 +64,12 @@ OUTPUT (JSON ONLY):
             result = {"proposed_guess": available_colors[:num_pegs], "reasoning": "Default guess"}
 
         return result
+    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Process method for abstract base class compliance."""
+        return self.propose_guess(
+            state.get("strategy", "explore"),
+            state.get("constraints", ""),
+            state.get("available_colors", []),
+            state.get("num_pegs", 4),
+            state.get("guess_history", [])
+        )

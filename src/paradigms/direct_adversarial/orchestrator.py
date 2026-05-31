@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import time
 from typing import Dict, Any, List
 
-from core.game_engine import GameEngine
-from core.puzzle_generator import load_puzzles
+from game_engine import GameEngine
+from puzzle_generator import load_puzzles
 from communication.protocol import A2ACommunicationLayer
 from registry.registry import get_global_registry
 from paradigms.direct_adversarial.agents import (

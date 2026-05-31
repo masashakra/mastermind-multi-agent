@@ -78,3 +78,7 @@ class LoggerAgent(BaseAgent):
             logs = [l for l in logs if l.get("message_type") == filter_type]
 
         return {"logs": logs[-limit:]}
+
+    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Process method for abstract base class compliance."""
+        return self.log_message(state.get("message_data", {}))

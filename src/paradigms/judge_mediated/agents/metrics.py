@@ -98,3 +98,8 @@ class MetricsAgent(BaseAgent):
             return True
         except:
             return False
+    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Process method for abstract base class compliance."""
+        metric_name = state.get("metric_name", "")
+        metric_value = state.get("metric_value", 0)
+        return self.record_metric(metric_name, metric_value, state.get("tags"))
