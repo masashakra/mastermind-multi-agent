@@ -171,9 +171,9 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
 
             # Return response to original sender
             response_msg = A2AMessage.response(
-                request_msg=msg,
-                status=A2AStatus.OK,
-                payload=result
+                request=msg,
+                payload=result,
+                status=A2AStatus.OK
             )
             return response_msg.to_dict()
 
@@ -263,9 +263,9 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
                 print(f"[Strategist] Error sending to {next_peer}: {e}")
 
             response_msg = A2AMessage.response(
-                request_msg=msg,
-                status=A2AStatus.OK,
-                payload=result
+                request=msg,
+                payload=result,
+                status=A2AStatus.OK
             )
             return response_msg.to_dict()
 
@@ -362,9 +362,9 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 print(f"[Proposer] Error sending to {next_peer}: {e}")
 
             response_msg = A2AMessage.response(
-                request_msg=msg,
-                status=A2AStatus.OK,
-                payload=result
+                request=msg,
+                payload=result,
+                status=A2AStatus.OK
             )
             return response_msg.to_dict()
 
@@ -491,9 +491,9 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
                     print(f"[Validator] Error sending to {next_peer}: {e}")
 
             response_msg = A2AMessage.response(
-                request_msg=msg,
-                status=A2AStatus.OK,
-                payload=result
+                request=msg,
+                payload=result,
+                status=A2AStatus.OK
             )
             return response_msg.to_dict()
 
