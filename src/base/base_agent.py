@@ -531,39 +531,47 @@ class BaseAgent(ABC):
             "validator": "validate",
         }
 
+        # Build clear peer options with descriptions
+        peer_options = []
+        for peer in available_peers:
+            action = peer_actions.get(peer, peer)
+            peer_options.append(f"- {peer} (POST /{action})")
+
         prompt = f"""{role_ctx}
 
 ## YOUR TASK — Autonomous Peer Routing
 
-You just completed your work:
+You just completed your analysis/strategy/proposal/validation. Now send your result to ONE other peer.
+
+YOUR WORK OUTPUT:
 {json.dumps(my_work, indent=2)}
 
-Your available peers to send to: {', '.join(available_peers)}
-Your team members: {', '.join(self.team_members)}
+AVAILABLE PEERS (you can ONLY send to one of these):
+{chr(10).join(peer_options)}
 
-PEER ACTIONS (what endpoint each peer exposes):
-- analyzer → /analyze
-- strategist → /strategy
-- proposer → /propose
-- validator → /validate
+PEER DESCRIPTIONS:
+- analyzer: Extracts constraints from feedback (receives feedback)
+- strategist: Determines game phase and constraints (receives constraints from analyzer)
+- proposer: Generates guesses respecting constraints (receives strategy from strategist)
+- validator: Validates guesses against all constraints (receives guesses from proposer)
+- YOUR ROLE: {self.role.value.upper()}
 
-Current game state:
-{json.dumps(game_state, indent=2)}
+IMPORTANT: You CANNOT send to yourself. You MUST choose from available peers above.
 
-DECIDE: Which peer should receive your result next?
-- analyzer needs feedback to extract constraints
-- strategist needs constraints to determine game phase
-- proposer needs strategy to generate guesses
-- validator needs guesses to validate
-- You can send back to a previous peer for revision
-- EXPLAIN your reasoning
+Current game state: {json.dumps(game_state, indent=2)}
 
-OUTPUT (JSON ONLY):
+DECIDE: Which ONE peer should receive your work?
+- If you are analyzer → send to strategist
+- If you are strategist → send to proposer
+- If you are proposer → send to validator
+- If you are validator → send result to orchestrator (but this is not in available_peers)
+
+OUTPUT (JSON ONLY - no markdown, no code blocks):
 {{
-  "next_peer": "analyzer|strategist|proposer|validator",
-  "action": "analyze|strategy|propose|validate",
-  "reasoning": "Why you chose this peer (20 words max)",
-  "confidence": 0.8
+  "next_peer": "ONE of: {' | '.join(available_peers)}",
+  "action": "{' | '.join(peer_actions.get(p, p) for p in available_peers)}",
+  "reasoning": "Why (1 sentence)",
+  "confidence": 0.9
 }}"""
 
         response = self.call_llm(prompt)

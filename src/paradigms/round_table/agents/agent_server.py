@@ -157,6 +157,12 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
             next_peer = routing.get("next_peer", "strategist")
             action = routing.get("action", "strategy")
 
+            # Validate routing decision
+            if next_peer not in available_peers:
+                print(f"[Analyzer] WARNING: Invalid routing decision '{next_peer}' not in {available_peers}. Using fallback.")
+                next_peer = available_peers[0] if available_peers else "strategist"
+                action = "strategy"
+
             print(f"[Analyzer] Decision: send to {next_peer} via /{action}")
 
             # Autonomously send to next peer
@@ -250,6 +256,12 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
 
             next_peer = routing.get("next_peer", "proposer")
             action = routing.get("action", "propose")
+
+            # Validate routing decision
+            if next_peer not in available_peers:
+                print(f"[Strategist] WARNING: Invalid routing decision '{next_peer}' not in {available_peers}. Using fallback.")
+                next_peer = available_peers[0] if available_peers else "proposer"
+                action = "propose"
 
             print(f"[Strategist] Decision: send to {next_peer} via /{action}")
 
@@ -349,6 +361,12 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
 
             next_peer = routing.get("next_peer", "validator")
             action = routing.get("action", "validate")
+
+            # Validate routing decision
+            if next_peer not in available_peers:
+                print(f"[Proposer] WARNING: Invalid routing decision '{next_peer}' not in {available_peers}. Using fallback.")
+                next_peer = available_peers[0] if available_peers else "validator"
+                action = "validate"
 
             print(f"[Proposer] Decision: send to {next_peer} via /{action}")
 
@@ -478,6 +496,12 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
                 next_peer = routing.get("next_peer", "proposer")
                 action = routing.get("action", "propose")
+
+                # Validate routing decision
+                if next_peer not in available_peers:
+                    print(f"[Validator] WARNING: Invalid routing decision '{next_peer}' not in {available_peers}. Using fallback.")
+                    next_peer = available_peers[0] if available_peers else "proposer"
+                    action = "propose"
 
                 print(f"[Validator] Decision: send back to {next_peer} for revision")
 
