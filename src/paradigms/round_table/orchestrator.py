@@ -125,7 +125,7 @@ class RoundTableOrchestrator:
 
                 # Return response
                 response = A2AMessage.response(
-                    request_msg=msg,
+                    request=msg,
                     status=A2AStatus.OK,
                     payload={"received": True, "message": "Guess received by orchestrator"}
                 )
