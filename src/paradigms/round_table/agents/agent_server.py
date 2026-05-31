@@ -176,6 +176,15 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 previous_guesses=guess_history
             )
 
+            # Carry game context forward so all agents have it
+            game_context = {
+                "available_colors": msg.payload.get("available_colors", []),
+                "guess_history":    msg.payload.get("guess_history", []),
+                "difficulty":       msg.payload.get("difficulty", "easy"),
+                "num_pegs":         msg.payload.get("num_pegs", 4),
+            }
+            outgoing_payload = {**result, **game_context}
+
             # Autonomously decide next peer via LLM
             game_state = msg.payload
             available_peers = ["strategist", "proposer", "validator"]
@@ -209,7 +218,7 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
                     await agent.send_a2a_message(
                         receiver_type=next_peer,
                         action=action,
-                        payload=result
+                        payload=outgoing_payload
                     )
                 except Exception as e:
                     print(f"[Analyzer] Error sending to {next_peer}: {e}")
@@ -312,6 +321,15 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
                 difficulty=difficulty
             )
 
+            # Carry game context forward
+            game_context = {
+                "available_colors": msg.payload.get("available_colors", []),
+                "guess_history":    msg.payload.get("guess_history", []),
+                "difficulty":       msg.payload.get("difficulty", "easy"),
+                "num_pegs":         msg.payload.get("num_pegs", 4),
+            }
+            outgoing_payload = {**result, **game_context}
+
             # Autonomously decide next peer
             game_state = msg.payload
             available_peers = ["analyzer", "proposer", "validator"]
@@ -345,7 +363,7 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
                     await agent.send_a2a_message(
                         receiver_type=next_peer,
                         action=action,
-                        payload=result
+                        payload=outgoing_payload
                     )
                 except Exception as e:
                     print(f"[Strategist] Error sending to {next_peer}: {e}")
@@ -460,6 +478,15 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 previous_guesses=guess_history
             )
 
+            # Carry game context forward
+            game_context = {
+                "available_colors": msg.payload.get("available_colors", []),
+                "guess_history":    msg.payload.get("guess_history", []),
+                "difficulty":       msg.payload.get("difficulty", "easy"),
+                "num_pegs":         msg.payload.get("num_pegs", 4),
+            }
+            outgoing_payload = {**result, **game_context}
+
             # Autonomously decide next peer
             game_state = msg.payload
             available_peers = ["analyzer", "strategist", "validator"]
@@ -493,7 +520,7 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                     await agent.send_a2a_message(
                         receiver_type=next_peer,
                         action=action,
-                        payload=result
+                        payload=outgoing_payload
                     )
                 except Exception as e:
                     print(f"[Proposer] Error sending to {next_peer}: {e}")
