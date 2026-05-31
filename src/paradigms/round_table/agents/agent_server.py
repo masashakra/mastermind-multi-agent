@@ -165,17 +165,20 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
 
             print(f"[Analyzer] Decision: send to {next_peer} via /{action}")
 
-            # Autonomously send to next peer
-            try:
-                await agent.send_a2a_message(
-                    receiver_type=next_peer,
-                    action=action,
-                    payload=result
-                )
-            except Exception as e:
-                print(f"[Analyzer] Error sending to {next_peer}: {e}")
+            # Autonomously send to next peer (fire-and-forget, non-blocking)
+            async def send_peer_message():
+                try:
+                    await agent.send_a2a_message(
+                        receiver_type=next_peer,
+                        action=action,
+                        payload=result
+                    )
+                except Exception as e:
+                    print(f"[Analyzer] Error sending to {next_peer}: {e}")
 
-            # Return response to original sender
+            asyncio.create_task(send_peer_message())
+
+            # Return response immediately to original sender (don't wait for peer send)
             response_msg = A2AMessage.response(
                 request=msg,
                 payload=result,
@@ -265,14 +268,18 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
 
             print(f"[Strategist] Decision: send to {next_peer} via /{action}")
 
-            try:
-                await agent.send_a2a_message(
-                    receiver_type=next_peer,
-                    action=action,
-                    payload=result
-                )
-            except Exception as e:
-                print(f"[Strategist] Error sending to {next_peer}: {e}")
+            # Autonomously send to next peer (fire-and-forget, non-blocking)
+            async def send_peer_message():
+                try:
+                    await agent.send_a2a_message(
+                        receiver_type=next_peer,
+                        action=action,
+                        payload=result
+                    )
+                except Exception as e:
+                    print(f"[Strategist] Error sending to {next_peer}: {e}")
+
+            asyncio.create_task(send_peer_message())
 
             response_msg = A2AMessage.response(
                 request=msg,
@@ -370,14 +377,18 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
 
             print(f"[Proposer] Decision: send to {next_peer} via /{action}")
 
-            try:
-                await agent.send_a2a_message(
-                    receiver_type=next_peer,
-                    action=action,
-                    payload=result
-                )
-            except Exception as e:
-                print(f"[Proposer] Error sending to {next_peer}: {e}")
+            # Autonomously send to next peer (fire-and-forget, non-blocking)
+            async def send_peer_message():
+                try:
+                    await agent.send_a2a_message(
+                        receiver_type=next_peer,
+                        action=action,
+                        payload=result
+                    )
+                except Exception as e:
+                    print(f"[Proposer] Error sending to {next_peer}: {e}")
+
+            asyncio.create_task(send_peer_message())
 
             response_msg = A2AMessage.response(
                 request=msg,
@@ -463,23 +474,26 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
             if is_valid:
                 print(f"[Validator] ✓ Valid guess! Sending to orchestrator...")
-                # Send to orchestrator's /receive_validation endpoint
-                try:
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        orch_msg = A2AMessage.request(
-                            sender_id="validator_round_table",
-                            receiver_id="orchestrator_round_table",
-                            action="receive_validation",
-                            payload=result
-                        )
-                        orch_resp = await client.post(
-                            "http://localhost:8107/receive_validation",
-                            json=orch_msg.to_dict(),
-                            timeout=10.0
-                        )
-                        print(f"[Validator] Orchestrator received validation (status={orch_resp.status_code})")
-                except Exception as e:
-                    print(f"[Validator] Error sending to orchestrator: {e}")
+                # Send to orchestrator's /receive_validation endpoint (fire-and-forget)
+                async def send_to_orchestrator():
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            orch_msg = A2AMessage.request(
+                                sender_id="validator_round_table",
+                                receiver_id="orchestrator_round_table",
+                                action="receive_validation",
+                                payload=result
+                            )
+                            orch_resp = await client.post(
+                                "http://localhost:8107/receive_validation",
+                                json=orch_msg.to_dict(),
+                                timeout=10.0
+                            )
+                            print(f"[Validator] Orchestrator received validation (status={orch_resp.status_code})")
+                    except Exception as e:
+                        print(f"[Validator] Error sending to orchestrator: {e}")
+
+                asyncio.create_task(send_to_orchestrator())
             else:
                 print(f"[Validator] ✗ Invalid guess, autonomously deciding next step...")
 
@@ -505,14 +519,18 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
                 print(f"[Validator] Decision: send back to {next_peer} for revision")
 
-                try:
-                    await agent.send_a2a_message(
-                        receiver_type=next_peer,
-                        action=action,
-                        payload=result
-                    )
-                except Exception as e:
-                    print(f"[Validator] Error sending to {next_peer}: {e}")
+                # Autonomously send back for revision (fire-and-forget, non-blocking)
+                async def send_for_revision():
+                    try:
+                        await agent.send_a2a_message(
+                            receiver_type=next_peer,
+                            action=action,
+                            payload=result
+                        )
+                    except Exception as e:
+                        print(f"[Validator] Error sending to {next_peer}: {e}")
+
+                asyncio.create_task(send_for_revision())
 
             response_msg = A2AMessage.response(
                 request=msg,
