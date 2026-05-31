@@ -1,0 +1,540 @@
+"""
+Round-Table Agent HTTP Servers (Autonomous Peer-to-Peer)
+
+Each agent runs as an independent FastAPI HTTP server and:
+1. Registers with registry on startup
+2. Receives A2AMessage requests from peers
+3. Processes work autonomously
+4. Decides next peer via LLM
+5. Sends A2AMessage to next peer (peer-to-peer, not orchestrator-mediated)
+6. Returns A2AMessage response to original sender
+
+Agents form a peer network where each can communicate with any other.
+"""
+
+import sys
+import time
+import threading
+import asyncio
+import json
+from pathlib import Path
+from typing import Dict, Any
+
+import httpx
+import uvicorn
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+
+# ── path setup ─────────────────────────────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+from paradigms.round_table.agents.analyzer import AnalyzerAgent, AGENT_CARD as ANALYZER_CARD
+from paradigms.round_table.agents.strategist import StrategistAgent, AGENT_CARD as STRATEGIST_CARD
+from paradigms.round_table.agents.proposer import ProposerAgent, AGENT_CARD as PROPOSER_CARD
+from paradigms.round_table.agents.validator import ValidatorAgent, AGENT_CARD as VALIDATOR_CARD
+from communication.a2a_message import A2AMessage, A2AStatus
+
+
+# ── shared helpers ──────────────────────────────────────────────────────────────
+
+def _convert_card_to_a2a(card: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert agent card to A2A schema format."""
+    capabilities = []
+
+    if isinstance(card.get("capabilities"), dict):
+        for cap_name, cap_spec in card["capabilities"].items():
+            capabilities.append({
+                "name": cap_name,
+                "description": cap_spec.get("description", ""),
+                "input_schema": cap_spec.get("parameters", {}),
+                "output_schema": cap_spec.get("returns", {}),
+                "timeout_seconds": 30,
+            })
+
+    return {
+        "agent_id": card.get("agent_id"),
+        "agent_name": card.get("agent_name"),
+        "agent_type": card.get("agent_type"),
+        "paradigm": card.get("paradigm"),
+        "version": card.get("version", "1.0.0"),
+        "description": card.get("description", ""),
+        "url": card.get("url", ""),
+        "health_endpoint": "/health",
+        "capabilities": capabilities,
+        "constraints_owned": card.get("constraints_owned", []),
+        "team_members": card.get("team_members", []),
+        "can_communicate": card.get("can_communicate", True),
+    }
+
+
+def _wait_for_healthy(url: str, retries: int = 25, delay: float = 0.3) -> None:
+    for _ in range(retries):
+        try:
+            r = httpx.get(f"{url}/health", timeout=2.0)
+            if r.status_code == 200:
+                return
+        except Exception:
+            pass
+        time.sleep(delay)
+    raise RuntimeError(f"Agent server at {url} never became healthy")
+
+
+def _register_with_registry(registry_url: str, card: Dict[str, Any]) -> None:
+    """POST the agent card to registry."""
+    for attempt in range(10):
+        try:
+            r = httpx.post(f"{registry_url}/register", json=card, timeout=5.0)
+            if r.status_code == 200:
+                print(f"[Registry] ✓ Registered: {card.get('agent_id')} @ {card.get('url')}")
+                return
+        except Exception as e:
+            pass
+        time.sleep(0.4)
+    raise RuntimeError(f"Could not register agent {card.get('agent_id')} with registry")
+
+
+# ── Analyzer server ────────────────────────────────────────────────────────────
+
+def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> FastAPI:
+    """Create FastAPI app for autonomous Analyzer agent."""
+    app = FastAPI(title="Analyzer Agent (Round-Table)")
+
+    # Create agent with async capabilities
+    agent = AnalyzerAgent(
+        provider=provider,
+        registry_url=registry_url,
+    )
+
+    card = _convert_card_to_a2a({
+        **ANALYZER_CARD,
+        "url": self_url,
+        "agent_type": "analyzer",
+        "paradigm": "round_table"
+    })
+
+    @app.on_event("startup")
+    async def startup():
+        """Register with registry on startup."""
+        _register_with_registry(registry_url, card)
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok", "agent": "analyzer"}
+
+    @app.get("/.well-known/agent.json")
+    async def agent_json():
+        return card
+
+    @app.post("/analyze")
+    async def handle_analyze(request: Request):
+        """Receive A2AMessage, process, autonomously route to next peer."""
+        try:
+            request_data = await request.json()
+            msg = A2AMessage.from_dict(request_data)
+
+            # Extract payload
+            last_guess = msg.payload.get("last_guess", [])
+            feedback = msg.payload.get("feedback", {})
+            guess_history = msg.payload.get("guess_history", [])
+
+            # Do the work
+            result = agent.analyze_feedback(
+                last_guess=last_guess,
+                feedback=feedback,
+                previous_guesses=guess_history
+            )
+
+            # Autonomously decide next peer via LLM
+            game_state = msg.payload
+            available_peers = ["strategist", "proposer", "validator"]
+
+            routing = await agent.decide_next_peer(
+                my_work=result,
+                available_peers=available_peers,
+                game_state=game_state
+            )
+
+            next_peer = routing.get("next_peer", "strategist")
+            action = routing.get("action", "strategy")
+
+            print(f"[Analyzer] Decision: send to {next_peer} via /{action}")
+
+            # Autonomously send to next peer
+            try:
+                await agent.send_a2a_message(
+                    receiver_type=next_peer,
+                    action=action,
+                    payload=result
+                )
+            except Exception as e:
+                print(f"[Analyzer] Error sending to {next_peer}: {e}")
+
+            # Return response to original sender
+            response_msg = A2AMessage.response(
+                request_msg=msg,
+                status=A2AStatus.OK,
+                payload=result
+            )
+            return response_msg.to_dict()
+
+        except Exception as e:
+            print(f"[Analyzer] Error: {e}")
+            error_msg = A2AMessage.error(
+                request_msg=msg if 'msg' in locals() else None,
+                error_message=str(e)
+            )
+            return error_msg.to_dict()
+
+    return app
+
+
+# ── Strategist server ──────────────────────────────────────────────────────────
+
+def create_strategist_app(provider: str, registry_url: str, self_url: str) -> FastAPI:
+    """Create FastAPI app for autonomous Strategist agent."""
+    app = FastAPI(title="Strategist Agent (Round-Table)")
+
+    agent = StrategistAgent(
+        provider=provider,
+        registry_url=registry_url,
+    )
+
+    card = _convert_card_to_a2a({
+        **STRATEGIST_CARD,
+        "url": self_url,
+        "agent_type": "strategist",
+        "paradigm": "round_table"
+    })
+
+    @app.on_event("startup")
+    async def startup():
+        _register_with_registry(registry_url, card)
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok", "agent": "strategist"}
+
+    @app.get("/.well-known/agent.json")
+    async def agent_json():
+        return card
+
+    @app.post("/strategy")
+    async def handle_strategy(request: Request):
+        """Receive A2AMessage, process, autonomously route to next peer."""
+        try:
+            request_data = await request.json()
+            msg = A2AMessage.from_dict(request_data)
+
+            guess_history = msg.payload.get("guess_history", [])
+            difficulty = msg.payload.get("difficulty", "medium")
+
+            # Do the work
+            result = agent.propose_strategy(
+                guess_history=guess_history,
+                difficulty=difficulty
+            )
+
+            # Autonomously decide next peer
+            game_state = msg.payload
+            available_peers = ["analyzer", "proposer", "validator"]
+
+            routing = await agent.decide_next_peer(
+                my_work=result,
+                available_peers=available_peers,
+                game_state=game_state
+            )
+
+            next_peer = routing.get("next_peer", "proposer")
+            action = routing.get("action", "propose")
+
+            print(f"[Strategist] Decision: send to {next_peer} via /{action}")
+
+            try:
+                await agent.send_a2a_message(
+                    receiver_type=next_peer,
+                    action=action,
+                    payload=result
+                )
+            except Exception as e:
+                print(f"[Strategist] Error sending to {next_peer}: {e}")
+
+            response_msg = A2AMessage.response(
+                request_msg=msg,
+                status=A2AStatus.OK,
+                payload=result
+            )
+            return response_msg.to_dict()
+
+        except Exception as e:
+            print(f"[Strategist] Error: {e}")
+            error_msg = A2AMessage.error(
+                request_msg=msg if 'msg' in locals() else None,
+                error_message=str(e)
+            )
+            return error_msg.to_dict()
+
+    return app
+
+
+# ── Proposer server ────────────────────────────────────────────────────────────
+
+def create_proposer_app(provider: str, registry_url: str, self_url: str) -> FastAPI:
+    """Create FastAPI app for autonomous Proposer agent."""
+    app = FastAPI(title="Proposer Agent (Round-Table)")
+
+    agent = ProposerAgent(
+        provider=provider,
+        registry_url=registry_url,
+    )
+
+    card = _convert_card_to_a2a({
+        **PROPOSER_CARD,
+        "url": self_url,
+        "agent_type": "proposer",
+        "paradigm": "round_table"
+    })
+
+    @app.on_event("startup")
+    async def startup():
+        _register_with_registry(registry_url, card)
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok", "agent": "proposer"}
+
+    @app.get("/.well-known/agent.json")
+    async def agent_json():
+        return card
+
+    @app.post("/propose")
+    async def handle_propose(request: Request):
+        """Receive A2AMessage, process, autonomously route to next peer."""
+        try:
+            request_data = await request.json()
+            msg = A2AMessage.from_dict(request_data)
+
+            strategy = msg.payload.get("strategy", "")
+            constraints_text = msg.payload.get("constraints", "")
+            available_colors = msg.payload.get("available_colors", [])
+            num_pegs = msg.payload.get("num_pegs", 4)
+            guess_history = msg.payload.get("guess_history", [])
+
+            # Do the work
+            result = agent.propose_guess(
+                strategy=strategy,
+                constraints_text=constraints_text,
+                available_colors=available_colors,
+                num_pegs=num_pegs,
+                previous_guesses=guess_history
+            )
+
+            # Autonomously decide next peer
+            game_state = msg.payload
+            available_peers = ["analyzer", "strategist", "validator"]
+
+            routing = await agent.decide_next_peer(
+                my_work=result,
+                available_peers=available_peers,
+                game_state=game_state
+            )
+
+            next_peer = routing.get("next_peer", "validator")
+            action = routing.get("action", "validate")
+
+            print(f"[Proposer] Decision: send to {next_peer} via /{action}")
+
+            try:
+                await agent.send_a2a_message(
+                    receiver_type=next_peer,
+                    action=action,
+                    payload=result
+                )
+            except Exception as e:
+                print(f"[Proposer] Error sending to {next_peer}: {e}")
+
+            response_msg = A2AMessage.response(
+                request_msg=msg,
+                status=A2AStatus.OK,
+                payload=result
+            )
+            return response_msg.to_dict()
+
+        except Exception as e:
+            print(f"[Proposer] Error: {e}")
+            error_msg = A2AMessage.error(
+                request_msg=msg if 'msg' in locals() else None,
+                error_message=str(e)
+            )
+            return error_msg.to_dict()
+
+    return app
+
+
+# ── Validator server ───────────────────────────────────────────────────────────
+
+def create_validator_app(provider: str, registry_url: str, self_url: str) -> FastAPI:
+    """Create FastAPI app for autonomous Validator agent."""
+    app = FastAPI(title="Validator Agent (Round-Table)")
+
+    agent = ValidatorAgent(
+        provider=provider,
+        registry_url=registry_url,
+    )
+
+    card = _convert_card_to_a2a({
+        **VALIDATOR_CARD,
+        "url": self_url,
+        "agent_type": "validator",
+        "paradigm": "round_table"
+    })
+
+    @app.on_event("startup")
+    async def startup():
+        _register_with_registry(registry_url, card)
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok", "agent": "validator"}
+
+    @app.get("/.well-known/agent.json")
+    async def agent_json():
+        return card
+
+    @app.post("/validate")
+    async def handle_validate(request: Request):
+        """Receive A2AMessage, process, autonomously route (usually to orchestrator)."""
+        try:
+            request_data = await request.json()
+            msg = A2AMessage.from_dict(request_data)
+
+            guess = msg.payload.get("guess", [])
+            available_colors = msg.payload.get("available_colors", [])
+            expected_length = msg.payload.get("expected_length", 4)
+            guess_history = msg.payload.get("guess_history", [])
+            constraints = msg.payload.get("constraints", {})
+
+            # Do the work
+            result = agent.validate_guess(
+                guess=guess,
+                available_colors=available_colors,
+                expected_length=expected_length,
+                previous_guesses=guess_history,
+                constraints=constraints
+            )
+
+            # Autonomously decide where to send (could go back to proposer for revision, or to orchestrator)
+            game_state = msg.payload
+            available_peers = ["analyzer", "strategist", "proposer"]  # Could revise, or could go to orchestrator
+
+            routing = await agent.decide_next_peer(
+                my_work=result,
+                available_peers=available_peers,
+                game_state=game_state
+            )
+
+            next_peer = routing.get("next_peer", "proposer")
+            action = routing.get("action", "propose")
+
+            # Special case: if valid, send to orchestrator instead
+            if result.get("valid", False):
+                print(f"[Validator] Valid guess! Sending to orchestrator...")
+                # Orchestrator will be available to receive results
+                # For now, we store it and orchestrator polls for it
+            else:
+                print(f"[Validator] Invalid guess, decision: send to {next_peer} via /{action}")
+
+                try:
+                    await agent.send_a2a_message(
+                        receiver_type=next_peer,
+                        action=action,
+                        payload=result
+                    )
+                except Exception as e:
+                    print(f"[Validator] Error sending to {next_peer}: {e}")
+
+            response_msg = A2AMessage.response(
+                request_msg=msg,
+                status=A2AStatus.OK,
+                payload=result
+            )
+            return response_msg.to_dict()
+
+        except Exception as e:
+            print(f"[Validator] Error: {e}")
+            error_msg = A2AMessage.error(
+                request_msg=msg if 'msg' in locals() else None,
+                error_message=str(e)
+            )
+            return error_msg.to_dict()
+
+    return app
+
+
+# ── Server startup ─────────────────────────────────────────────────────────────
+
+def start_agent_servers(
+    provider: str,
+    registry_url: str,
+    base_port: int = 8101,
+) -> Dict[str, str]:
+    """Start all agent HTTP servers and wait for them to be healthy.
+
+    Args:
+        provider: LLM provider ("ollama", "kaggle", "claude", etc.)
+        registry_url: URL of registry server
+        base_port: Starting port (analyzer=base_port, strategist=+1, etc.)
+
+    Returns:
+        Dict mapping agent type to URL (e.g., {"analyzer": "http://localhost:8101"})
+    """
+    servers = {}
+    apps = {}
+
+    agents = [
+        ("analyzer", create_analyzer_app, base_port),
+        ("strategist", create_strategist_app, base_port + 1),
+        ("proposer", create_proposer_app, base_port + 2),
+        ("validator", create_validator_app, base_port + 3),
+    ]
+
+    for agent_type, create_app_func, port in agents:
+        url = f"http://localhost:{port}"
+
+        # Create app
+        app = create_app_func(
+            provider=provider,
+            registry_url=registry_url,
+            self_url=url,
+        )
+        apps[agent_type] = app
+
+        # Start server in background thread
+        def run_server(agent_type=agent_type, app=app, port=port):
+            uvicorn.run(
+                app,
+                host="127.0.0.1",
+                port=port,
+                log_level="error",
+            )
+
+        thread = threading.Thread(target=run_server, daemon=True)
+        thread.start()
+
+        # Wait for server to be healthy
+        _wait_for_healthy(url)
+        servers[agent_type] = url
+        print(f"[AgentServer] {agent_type} running at {url}")
+
+    return servers
+
+
+if __name__ == "__main__":
+    # For local testing only
+    import os
+
+    registry_url = os.getenv("REGISTRY_URL", "http://localhost:8100")
+    provider = os.getenv("PROVIDER", "kaggle")
+
+    start_agent_servers(provider=provider, registry_url=registry_url)
+    import time
+    time.sleep(3600)  # Keep running for 1 hour

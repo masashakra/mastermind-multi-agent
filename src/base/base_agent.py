@@ -9,6 +9,9 @@ import json
 import os
 import time
 import sys
+import asyncio
+import httpx
+import uuid
 from typing import Dict, Any, Optional, List
 from abc import ABC, abstractmethod
 import requests
@@ -18,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from communication.protocol import A2ACommunicationLayer, A2AMessage
+from communication.a2a_message import A2AStatus, A2AErrorCode
 from base.role import AgentRole, ParadigmType, RoleContext
 
 
@@ -45,6 +49,8 @@ class BaseAgent(ABC):
         team_members: Optional[List[str]] = None,
         can_communicate: bool = True,
         constraints_owned: Optional[List[str]] = None,
+        # NEW: For round-table peer messaging
+        registry_url: Optional[str] = None,
     ):
         """Initialize base agent.
 
@@ -90,6 +96,10 @@ class BaseAgent(ABC):
             can_communicate=self.can_communicate,
             constraints_owned=self.constraints_owned
         )
+
+        # NEW: For round-table peer messaging (autonomous A2A communication)
+        self.registry_url = registry_url
+        self.http_client = httpx.AsyncClient(timeout=120.0)
 
     def _initialize_llm(self) -> None:
         """Initialize LLM client based on provider."""
@@ -346,6 +356,244 @@ class BaseAgent(ABC):
             "provider": self.provider,
             "model": self.model
         }
+
+    # ── NEW: Autonomous Peer Messaging (Round-Table Paradigm) ──────────────────
+
+    async def discover_peer(self, peer_type: str) -> str:
+        """Discover peer agent URL via registry.
+
+        Args:
+            peer_type: Agent type to discover (e.g., "strategist", "analyzer")
+
+        Returns:
+            Peer agent URL (e.g., "http://localhost:8102")
+
+        Raises:
+            RuntimeError: If peer cannot be discovered
+        """
+        if not self.registry_url:
+            raise RuntimeError("registry_url not set - cannot discover peers")
+
+        try:
+            resp = await self.http_client.get(
+                f"{self.registry_url}/agents/type/{peer_type}",
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Response may be wrapped in A2AMessage
+            if "payload" in data:
+                agents = data["payload"].get("agents", [])
+            else:
+                agents = data if isinstance(data, list) else data.get("agents", [])
+
+            if agents:
+                url = agents[0].get("url")
+                if url:
+                    return url
+
+            raise RuntimeError(f"No {peer_type} agents found in registry")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to discover {peer_type}: {str(e)}")
+
+    async def send_a2a_message(
+        self,
+        receiver_type: str,
+        action: str,
+        payload: Dict[str, Any],
+        retries: int = 2,
+    ) -> Dict[str, Any]:
+        """Send A2A message to peer agent.
+
+        Args:
+            receiver_type: Type of receiver (e.g., "strategist")
+            action: Action endpoint (e.g., "strategy", "propose")
+            payload: Message payload
+            retries: Number of retry attempts on failure
+
+        Returns:
+            Response payload from receiver
+
+        Raises:
+            RuntimeError: If message send fails after retries
+        """
+        msg_id = str(uuid.uuid4())[:8]
+
+        for attempt in range(retries):
+            try:
+                # Discover peer
+                peer_url = await self.discover_peer(receiver_type)
+
+                # Create A2A request message
+                request_msg = A2AMessage.request(
+                    sender_id=f"{self.agent_id}_round_table",
+                    receiver_id=f"{receiver_type}_round_table",
+                    action=action,
+                    payload=payload,
+                )
+
+                print(
+                    f"[{self.name}→A2A] POST {peer_url}/{action} "
+                    f"(msg_id={msg_id}, attempt {attempt+1})"
+                )
+
+                # Send HTTP POST with A2A envelope
+                resp = await self.http_client.post(
+                    f"{peer_url}/{action}",
+                    json=request_msg.to_dict(),
+                    timeout=30.0,
+                )
+
+                # Parse response
+                if resp.status_code == 200:
+                    response_data = resp.json()
+
+                    # Handle A2AMessage response
+                    if isinstance(response_data, dict) and "message_id" in response_data:
+                        response_msg = A2AMessage.from_dict(response_data)
+                        if response_msg.status == A2AStatus.OK:
+                            print(
+                                f"[{self.name}←A2A] {action} ✓ "
+                                f"(msg_id={msg_id})"
+                            )
+                            return response_msg.payload
+                        else:
+                            error = response_msg.error_message or "Unknown error"
+                            print(
+                                f"[{self.name}←A2A] {action} ERROR: {error}"
+                            )
+                            if attempt < retries - 1:
+                                await asyncio.sleep(0.5)
+                            continue
+                    else:
+                        # Unwrapped response
+                        print(
+                            f"[{self.name}←A2A] {action} ✓ "
+                            f"(msg_id={msg_id})"
+                        )
+                        return response_data
+
+                else:
+                    error_msg = resp.text or f"HTTP {resp.status_code}"
+                    print(
+                        f"[{self.name}←A2A] {action} HTTP {resp.status_code}: {error_msg[:50]}"
+                    )
+                    if attempt < retries - 1:
+                        await asyncio.sleep(0.5)
+                    continue
+
+            except httpx.TimeoutException:
+                print(
+                    f"[{self.name}] Timeout calling {action} "
+                    f"(attempt {attempt+1})"
+                )
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+                continue
+            except Exception as e:
+                print(
+                    f"[{self.name}] Error calling {action}: {e} "
+                    f"(attempt {attempt+1})"
+                )
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.5)
+                continue
+
+        raise RuntimeError(
+            f"[{self.name}] Failed to send to {receiver_type} after {retries} attempts"
+        )
+
+    async def decide_next_peer(
+        self,
+        my_work: Dict[str, Any],
+        available_peers: List[str],
+        game_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Use LLM to decide which peer to send message to next.
+
+        Args:
+            my_work: Output from this agent's work
+            available_peers: List of peers available to send to
+            game_state: Current game state
+
+        Returns:
+            {"next_peer": str, "action": str, "reasoning": str, "confidence": float}
+        """
+        role_ctx = self.get_role_system_prompt()
+
+        prompt = f"""{role_ctx}
+
+## YOUR TASK — Autonomous Peer Routing
+
+You just completed your work:
+{json.dumps(my_work, indent=2)}
+
+Your available peers: {', '.join(available_peers)}
+Your team members: {', '.join(self.team_members)}
+
+Current game state:
+{json.dumps(game_state, indent=2)}
+
+DECIDE: Which peer should receive your result next?
+- You can send to 1 or multiple peers
+- You can send back to a previous peer for revision
+- You can skip peers entirely
+- EXPLAIN your reasoning
+
+OUTPUT (JSON ONLY):
+{{
+  "next_peer": "analyzer|strategist|proposer|validator",
+  "action": "analyze|strategy|propose|validate",
+  "reasoning": "Why you chose this peer",
+  "confidence": 0.8
+}}"""
+
+        response = self.call_llm(prompt)
+        result = self.parse_json_response(response)
+
+        if "error" in result:
+            # Fallback to sequential routing if LLM fails
+            if "strategist" in available_peers:
+                result = {
+                    "next_peer": "strategist",
+                    "action": "strategy",
+                    "reasoning": "Default fallback",
+                    "confidence": 0.3,
+                }
+            else:
+                result = {
+                    "next_peer": available_peers[0] if available_peers else "analyzer",
+                    "action": available_peers[0] if available_peers else "analyze",
+                    "reasoning": "Default fallback",
+                    "confidence": 0.3,
+                }
+
+        return result
+
+    def get_role_system_prompt(self) -> str:
+        """Get role-aware system prompt for this agent.
+
+        Returns:
+            System prompt with explicit role context
+        """
+        return f"""You are the {self.role.value if self.role else 'Agent'} in a peer-to-peer team.
+
+ROLE: {self.role.value if self.role else 'Unknown'}
+PARADIGM: {self.paradigm.value if self.paradigm else 'Unknown'}
+TEAM: {', '.join(self.team_members) if self.team_members else 'None'}
+CAN_COMMUNICATE: {self.can_communicate}
+YOUR_RESPONSIBILITY: {', '.join(self.constraints_owned) if self.constraints_owned else 'General contribution'}
+
+You are an autonomous AI agent. Make decisions based on:
+1. Your explicit role and responsibilities
+2. Game state and feedback
+3. What will help the team succeed
+4. Clear reasoning for your choices
+
+You can communicate with other team members via A2A messages.
+All your responses must be valid JSON."""
 
     @abstractmethod
     def process(self, **kwargs) -> Dict[str, Any]:
