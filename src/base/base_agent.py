@@ -647,11 +647,22 @@ class BaseAgent(ABC):
             action = peer_actions.get(peer, peer)
             peer_options.append(f"- {peer} (POST /{action})")
 
+        # Get memory for context
+        memory_summary = self.memory.get_memory_summary(max_messages=10)
+        recent_messages = ""
+        if memory_summary["recent_inbox"] or memory_summary["recent_sent"]:
+            recent_messages = "\n\nRECENT MESSAGES:"
+            for msg in memory_summary["recent_sent"][-3:]:
+                recent_messages += f"\n- YOU sent to {msg['to']}: {msg['action']}"
+            for msg in memory_summary["recent_inbox"][-3:]:
+                recent_messages += f"\n- YOU received from {msg['from']}: {msg['action']}"
+
         prompt = f"""{role_ctx}
 
-## YOUR TASK — Autonomous Peer Routing
+## YOUR TASK — Autonomous Peer Routing (WITH MEMORY)
 
-You just completed your analysis/strategy/proposal/validation. Now send your result to ONE other peer.
+You just completed your work. Now decide which peer to send it to.
+{recent_messages}
 
 YOUR WORK OUTPUT:
 {json.dumps(my_work, indent=2)}
@@ -659,28 +670,28 @@ YOUR WORK OUTPUT:
 AVAILABLE PEERS (you can ONLY send to one of these):
 {chr(10).join(peer_options)}
 
-PEER DESCRIPTIONS:
-- analyzer: Extracts constraints from feedback (receives feedback)
-- strategist: Determines game phase and constraints (receives constraints from analyzer)
-- proposer: Generates guesses respecting constraints (receives strategy from strategist)
-- validator: Validates guesses against all constraints (receives guesses from proposer)
+PEER DESCRIPTIONS & EXPECTED MESSAGE FLOW:
+- analyzer: Receives feedback, extracts constraints → should send to strategist
+- strategist: Receives constraints from analyzer → should send to proposer
+- proposer: Receives strategy from strategist → should send to validator
+- validator: Receives guess from proposer → sends to orchestrator (NOT in available_peers)
 - YOUR ROLE: {self.role.value.upper()}
 
-IMPORTANT: You CANNOT send to yourself. You MUST choose from available peers above.
+CRITICAL RULES:
+✓ Send forward in the normal flow (analyzer→strategist→proposer→validator)
+✗ DO NOT send back to someone you just received from (avoid loops!)
+✗ DO NOT send to yourself
+✓ MUST choose from available_peers only
 
 Current game state: {json.dumps(game_state, indent=2)}
 
 DECIDE: Which ONE peer should receive your work?
-- If you are analyzer → send to strategist
-- If you are strategist → send to proposer
-- If you are proposer → send to validator
-- If you are validator → send result to orchestrator (but this is not in available_peers)
 
 OUTPUT (JSON ONLY - no markdown, no code blocks):
 {{
   "next_peer": "ONE of: {' | '.join(available_peers)}",
   "action": "{' | '.join(peer_actions.get(p, p) for p in available_peers)}",
-  "reasoning": "Why (1 sentence)",
+  "reasoning": "Why this peer (1 sentence)",
   "confidence": 0.9
 }}"""
 
