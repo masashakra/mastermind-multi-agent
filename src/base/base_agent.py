@@ -20,8 +20,8 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from communication.protocol import A2ACommunicationLayer, A2AMessage
-from communication.a2a_message import A2AStatus, A2AErrorCode
+from communication.protocol import A2ACommunicationLayer
+from communication.a2a_message import A2AMessage, A2AStatus, A2AErrorCode
 from base.role import AgentRole, ParadigmType, RoleContext
 
 

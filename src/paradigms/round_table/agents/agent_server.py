@@ -271,10 +271,15 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
 
         except Exception as e:
             print(f"[Strategist] Error: {e}")
-            error_msg = A2AMessage.error(
-                request_msg=msg if 'msg' in locals() else None,
-                error_message=str(e)
-            )
+            if 'msg' in locals() and msg:
+                from communication.a2a_message import A2AErrorCode
+                error_msg = A2AMessage.error(
+                    request=msg,
+                    error_code=A2AErrorCode.INTERNAL_ERROR,
+                    error_message=str(e)
+                )
+            else:
+                return {"error": str(e)}
             return error_msg.to_dict()
 
     return app
@@ -365,10 +370,15 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
 
         except Exception as e:
             print(f"[Proposer] Error: {e}")
-            error_msg = A2AMessage.error(
-                request_msg=msg if 'msg' in locals() else None,
-                error_message=str(e)
-            )
+            if 'msg' in locals() and msg:
+                from communication.a2a_message import A2AErrorCode
+                error_msg = A2AMessage.error(
+                    request=msg,
+                    error_code=A2AErrorCode.INTERNAL_ERROR,
+                    error_message=str(e)
+                )
+            else:
+                return {"error": str(e)}
             return error_msg.to_dict()
 
     return app
@@ -489,10 +499,15 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
         except Exception as e:
             print(f"[Validator] Error: {e}")
-            error_msg = A2AMessage.error(
-                request_msg=msg if 'msg' in locals() else None,
-                error_message=str(e)
-            )
+            if 'msg' in locals() and msg:
+                from communication.a2a_message import A2AErrorCode
+                error_msg = A2AMessage.error(
+                    request=msg,
+                    error_code=A2AErrorCode.INTERNAL_ERROR,
+                    error_message=str(e)
+                )
+            else:
+                return {"error": str(e)}
             return error_msg.to_dict()
 
     return app
