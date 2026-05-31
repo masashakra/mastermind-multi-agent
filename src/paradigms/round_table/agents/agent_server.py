@@ -132,10 +132,42 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
             request_data = await request.json()
             msg = A2AMessage.from_dict(request_data)
 
+            # Log received message in memory
+            agent.memory.receive_message(
+                from_agent=msg.sender_id.split("_")[0],
+                action=msg.action,
+                payload=msg.payload,
+                msg_id=msg.message_id,
+                is_reply=False
+            )
+
+            # If this is a question, answer it directly without forwarding
+            if msg.is_question:
+                last_guess = msg.payload.get("last_guess", [])
+                feedback = msg.payload.get("feedback", {})
+                guess_history = msg.payload.get("guess_history", [])
+
+                result = agent.analyze_feedback(
+                    last_guess=last_guess,
+                    feedback=feedback,
+                    previous_guesses=guess_history
+                )
+
+                response_msg = A2AMessage.response(
+                    request=msg,
+                    payload=result,
+                    status=A2AStatus.OK,
+                    is_reply=True
+                )
+                return response_msg.to_dict()
+
             # Extract payload
             last_guess = msg.payload.get("last_guess", [])
             feedback = msg.payload.get("feedback", {})
             guess_history = msg.payload.get("guess_history", [])
+
+            # Include memory in decision context
+            memory_summary = agent.memory.get_memory_summary()
 
             # Do the work
             result = agent.analyze_feedback(
@@ -243,6 +275,33 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
         try:
             request_data = await request.json()
             msg = A2AMessage.from_dict(request_data)
+
+            # Log received message in memory
+            agent.memory.receive_message(
+                from_agent=msg.sender_id.split("_")[0],
+                action=msg.action,
+                payload=msg.payload,
+                msg_id=msg.message_id,
+                is_reply=False
+            )
+
+            # If this is a question, answer it directly without forwarding
+            if msg.is_question:
+                guess_history = msg.payload.get("guess_history", [])
+                difficulty = msg.payload.get("difficulty", "medium")
+
+                result = agent.propose_strategy(
+                    guess_history=guess_history,
+                    difficulty=difficulty
+                )
+
+                response_msg = A2AMessage.response(
+                    request=msg,
+                    payload=result,
+                    status=A2AStatus.OK,
+                    is_reply=True
+                )
+                return response_msg.to_dict()
 
             guess_history = msg.payload.get("guess_history", [])
             difficulty = msg.payload.get("difficulty", "medium")
@@ -352,6 +411,39 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
         try:
             request_data = await request.json()
             msg = A2AMessage.from_dict(request_data)
+
+            # Log received message in memory
+            agent.memory.receive_message(
+                from_agent=msg.sender_id.split("_")[0],
+                action=msg.action,
+                payload=msg.payload,
+                msg_id=msg.message_id,
+                is_reply=False
+            )
+
+            # If this is a question, answer it directly without forwarding
+            if msg.is_question:
+                strategy = msg.payload.get("strategy", "")
+                constraints_text = msg.payload.get("constraints", "")
+                available_colors = msg.payload.get("available_colors", [])
+                num_pegs = msg.payload.get("num_pegs", 4)
+                guess_history = msg.payload.get("guess_history", [])
+
+                result = agent.propose_guess(
+                    strategy=strategy,
+                    constraints_text=constraints_text,
+                    available_colors=available_colors,
+                    num_pegs=num_pegs,
+                    previous_guesses=guess_history
+                )
+
+                response_msg = A2AMessage.response(
+                    request=msg,
+                    payload=result,
+                    status=A2AStatus.OK,
+                    is_reply=True
+                )
+                return response_msg.to_dict()
 
             strategy = msg.payload.get("strategy", "")
             constraints_text = msg.payload.get("constraints", "")
@@ -467,6 +559,39 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
         try:
             request_data = await request.json()
             msg = A2AMessage.from_dict(request_data)
+
+            # Log received message in memory
+            agent.memory.receive_message(
+                from_agent=msg.sender_id.split("_")[0],
+                action=msg.action,
+                payload=msg.payload,
+                msg_id=msg.message_id,
+                is_reply=False
+            )
+
+            # If this is a question, answer it directly without forwarding
+            if msg.is_question:
+                guess = msg.payload.get("guess", msg.payload.get("proposed_guess", []))
+                available_colors = msg.payload.get("available_colors", [])
+                expected_length = msg.payload.get("expected_length", 4)
+                guess_history = msg.payload.get("guess_history", [])
+                constraints = msg.payload.get("constraints", {})
+
+                result = agent.validate_guess(
+                    guess=guess,
+                    available_colors=available_colors,
+                    expected_length=expected_length,
+                    previous_guesses=guess_history,
+                    constraints=constraints
+                )
+
+                response_msg = A2AMessage.response(
+                    request=msg,
+                    payload=result,
+                    status=A2AStatus.OK,
+                    is_reply=True
+                )
+                return response_msg.to_dict()
 
             guess = msg.payload.get("guess", msg.payload.get("proposed_guess", []))
             available_colors = msg.payload.get("available_colors", [])

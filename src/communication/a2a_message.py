@@ -58,6 +58,8 @@ class A2AMessage:
       - error_code: If status=error, which error type (e.g., INVALID_PAYLOAD)
       - error_message: Human-readable error description
       - response_to: If this is a response, the message_id of the request
+      - is_question: If True, sender expects a reply (bidirectional)
+      - is_reply: If True, this is a direct reply to a question (not forwarded)
     """
 
     message_id: str
@@ -70,6 +72,8 @@ class A2AMessage:
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     response_to: Optional[str] = None
+    is_question: bool = False
+    is_reply: bool = False
 
     @classmethod
     def request(
@@ -78,8 +82,13 @@ class A2AMessage:
         receiver_id: str,
         action: str,
         payload: Dict[str, Any],
+        is_question: bool = False,
     ) -> "A2AMessage":
-        """Create a new A2A request message."""
+        """Create a new A2A request message.
+
+        Args:
+            is_question: If True, sender expects a direct reply (wait for response)
+        """
         return cls(
             message_id=str(uuid.uuid4()),
             timestamp=time.time(),
@@ -88,6 +97,7 @@ class A2AMessage:
             action=action,
             payload=payload,
             status=A2AStatus.OK,
+            is_question=is_question,
         )
 
     @classmethod
@@ -96,8 +106,13 @@ class A2AMessage:
         request: "A2AMessage",
         payload: Dict[str, Any],
         status: A2AStatus = A2AStatus.OK,
+        is_reply: bool = False,
     ) -> "A2AMessage":
-        """Create a response to an A2A request."""
+        """Create a response to an A2A request.
+
+        Args:
+            is_reply: If True, this is a direct reply (not forwarded to next agent)
+        """
         return cls(
             message_id=str(uuid.uuid4()),
             timestamp=time.time(),
@@ -107,6 +122,7 @@ class A2AMessage:
             payload=payload,
             status=status,
             response_to=request.message_id,
+            is_reply=is_reply,
         )
 
     @classmethod

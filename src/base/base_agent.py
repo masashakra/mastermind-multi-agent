@@ -25,6 +25,81 @@ from communication.a2a_message import A2AMessage, A2AStatus, A2AErrorCode
 from base.role import AgentRole, ParadigmType, RoleContext
 
 
+class AgentMemory:
+    """Agent memory system for tracking sent/received messages.
+
+    Each agent maintains:
+    - inbox: Messages received from other agents
+    - sent: Messages sent to other agents
+    - deductions: Self-discovered facts/constraints
+    """
+
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+        self.inbox: List[Dict[str, Any]] = []
+        self.sent: List[Dict[str, Any]] = []
+        self.deductions: Dict[str, Any] = {}
+
+    def receive_message(
+        self,
+        from_agent: str,
+        action: str,
+        payload: Dict[str, Any],
+        msg_id: str = "",
+        is_reply: bool = False,
+    ) -> None:
+        """Store incoming message in inbox."""
+        self.inbox.append({
+            "from": from_agent,
+            "action": action,
+            "payload": payload,
+            "msg_id": msg_id,
+            "is_reply": is_reply,
+            "timestamp": time.time(),
+        })
+
+    def send_message(
+        self,
+        to_agent: str,
+        action: str,
+        payload: Dict[str, Any],
+        msg_id: str = "",
+        is_question: bool = False,
+    ) -> None:
+        """Log outgoing message."""
+        self.sent.append({
+            "to": to_agent,
+            "action": action,
+            "payload": payload,
+            "msg_id": msg_id,
+            "is_question": is_question,
+            "timestamp": time.time(),
+        })
+
+    def get_conversation_with(self, agent_id: str) -> List[Dict[str, Any]]:
+        """Get conversation history with specific agent."""
+        conversation = []
+        for msg in self.inbox:
+            if msg["from"] == agent_id:
+                conversation.append({"direction": "received", **msg})
+        for msg in self.sent:
+            if msg["to"] == agent_id:
+                conversation.append({"direction": "sent", **msg})
+        return sorted(conversation, key=lambda x: x["timestamp"])
+
+    def get_memory_summary(self, max_messages: int = 5) -> Dict[str, Any]:
+        """Format memory for LLM context."""
+        return {
+            "recent_inbox": self.inbox[-max_messages:],
+            "recent_sent": self.sent[-max_messages:],
+            "deductions": self.deductions,
+        }
+
+    def add_deduction(self, key: str, value: Any) -> None:
+        """Add a learned fact/constraint."""
+        self.deductions[key] = value
+
+
 class BaseAgent(ABC):
     """Base class for all worker agents.
 
@@ -100,6 +175,9 @@ class BaseAgent(ABC):
         # NEW: For round-table peer messaging (autonomous A2A communication)
         self.registry_url = registry_url
         self.http_client = httpx.AsyncClient(timeout=120.0)
+
+        # NEW: Agent memory for tracking sent/received messages
+        self.memory = AgentMemory(self.agent_id)
 
     def _initialize_llm(self) -> None:
         """Initialize LLM client based on provider."""
@@ -403,14 +481,20 @@ class BaseAgent(ABC):
         receiver_type: str,
         action: str,
         payload: Dict[str, Any],
+        is_question: bool = False,
         retries: int = 2,
     ) -> Dict[str, Any]:
         """Send A2A message to peer agent.
+
+        Supports both:
+        - Unidirectional (fire-and-forget): is_question=False
+        - Bidirectional (wait for reply): is_question=True
 
         Args:
             receiver_type: Type of receiver (e.g., "strategist")
             action: Action endpoint (e.g., "strategy", "propose")
             payload: Message payload
+            is_question: If True, wait for direct reply (bidirectional)
             retries: Number of retry attempts on failure
 
         Returns:
@@ -432,10 +516,12 @@ class BaseAgent(ABC):
                     receiver_id=f"{receiver_type}_round_table",
                     action=action,
                     payload=payload,
+                    is_question=is_question,
                 )
 
+                msg_type = "Q" if is_question else "→"
                 print(
-                    f"[{self.name}→A2A] POST {peer_url}/{action} "
+                    f"[{self.name}{msg_type}A2A] POST {peer_url}/{action} "
                     f"(msg_id={msg_id}, attempt {attempt+1})"
                 )
 
@@ -454,10 +540,27 @@ class BaseAgent(ABC):
                     if isinstance(response_data, dict) and "message_id" in response_data:
                         response_msg = A2AMessage.from_dict(response_data)
                         if response_msg.status == A2AStatus.OK:
-                            print(
-                                f"[{self.name}←A2A] {action} ✓ "
-                                f"(msg_id={msg_id})"
-                            )
+                            # Log in memory
+                            if is_question:
+                                self.memory.receive_message(
+                                    receiver_type,
+                                    action,
+                                    response_msg.payload,
+                                    response_msg.message_id,
+                                    is_reply=True
+                                )
+                                print(
+                                    f"[{self.name}←REPLY] {action} ✓ "
+                                    f"(msg_id={msg_id})"
+                                )
+                            else:
+                                self.memory.send_message(
+                                    receiver_type,
+                                    action,
+                                    payload,
+                                    msg_id,
+                                    is_question=False
+                                )
                             return response_msg.payload
                         else:
                             error = response_msg.error_message or "Unknown error"
@@ -469,6 +572,13 @@ class BaseAgent(ABC):
                             continue
                     else:
                         # Unwrapped response
+                        self.memory.send_message(
+                            receiver_type,
+                            action,
+                            payload,
+                            msg_id,
+                            is_question=is_question
+                        )
                         print(
                             f"[{self.name}←A2A] {action} ✓ "
                             f"(msg_id={msg_id})"
