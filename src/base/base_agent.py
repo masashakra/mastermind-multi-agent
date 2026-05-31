@@ -523,6 +523,14 @@ class BaseAgent(ABC):
         """
         role_ctx = self.get_role_system_prompt()
 
+        # Map peers to their action endpoints for clarity
+        peer_actions = {
+            "analyzer": "analyze",
+            "strategist": "strategy",
+            "proposer": "propose",
+            "validator": "validate",
+        }
+
         prompt = f"""{role_ctx}
 
 ## YOUR TASK — Autonomous Peer Routing
@@ -530,30 +538,38 @@ class BaseAgent(ABC):
 You just completed your work:
 {json.dumps(my_work, indent=2)}
 
-Your available peers: {', '.join(available_peers)}
+Your available peers to send to: {', '.join(available_peers)}
 Your team members: {', '.join(self.team_members)}
+
+PEER ACTIONS (what endpoint each peer exposes):
+- analyzer → /analyze
+- strategist → /strategy
+- proposer → /propose
+- validator → /validate
 
 Current game state:
 {json.dumps(game_state, indent=2)}
 
 DECIDE: Which peer should receive your result next?
-- You can send to 1 or multiple peers
+- analyzer needs feedback to extract constraints
+- strategist needs constraints to determine game phase
+- proposer needs strategy to generate guesses
+- validator needs guesses to validate
 - You can send back to a previous peer for revision
-- You can skip peers entirely
 - EXPLAIN your reasoning
 
 OUTPUT (JSON ONLY):
 {{
   "next_peer": "analyzer|strategist|proposer|validator",
   "action": "analyze|strategy|propose|validate",
-  "reasoning": "Why you chose this peer",
+  "reasoning": "Why you chose this peer (20 words max)",
   "confidence": 0.8
 }}"""
 
         response = self.call_llm(prompt)
         result = self.parse_json_response(response)
 
-        if "error" in result:
+        if "error" in result or "next_peer" not in result:
             # Fallback to sequential routing if LLM fails
             if "strategist" in available_peers:
                 result = {
@@ -562,10 +578,24 @@ OUTPUT (JSON ONLY):
                     "reasoning": "Default fallback",
                     "confidence": 0.3,
                 }
+            elif "proposer" in available_peers:
+                result = {
+                    "next_peer": "proposer",
+                    "action": "propose",
+                    "reasoning": "Default fallback",
+                    "confidence": 0.3,
+                }
+            elif "validator" in available_peers:
+                result = {
+                    "next_peer": "validator",
+                    "action": "validate",
+                    "reasoning": "Default fallback",
+                    "confidence": 0.3,
+                }
             else:
                 result = {
                     "next_peer": available_peers[0] if available_peers else "analyzer",
-                    "action": available_peers[0] if available_peers else "analyze",
+                    "action": peer_actions.get(available_peers[0], "analyze") if available_peers else "analyze",
                     "reasoning": "Default fallback",
                     "confidence": 0.3,
                 }
