@@ -21,12 +21,13 @@ class ValidatorAgent(BaseAgent):
     def __init__(self, provider: str = "ollama", comm_layer: Optional[A2ACommunicationLayer] = None,
                  role: Optional[AgentRole] = None, paradigm: Optional[ParadigmType] = None,
                  team_members: Optional[List[str]] = None, can_communicate: bool = True,
-                 constraints_owned: Optional[List[str]] = None):
+                 constraints_owned: Optional[List[str]] = None, registry_url: Optional[str] = None):
         super().__init__(
-            name="Validator_BossWorker", provider=provider, comm_layer=comm_layer,
-            role=role or AgentRole.VALIDATOR, paradigm=paradigm or ParadigmType.BOSS_WORKER,
-            team_members=team_members or ["boss", "analyzer", "strategist", "proposer"],
+            name="Validator_RoundTable", provider=provider, comm_layer=comm_layer,
+            role=role or AgentRole.VALIDATOR, paradigm=paradigm or ParadigmType.ROUND_TABLE,
+            team_members=team_members or ["analyzer", "strategist", "proposer"],
             can_communicate=can_communicate, constraints_owned=constraints_owned or ["Hard constraint enforcement"],
+            registry_url=registry_url,
         )
 
     def validate_guess(self, guess: List[str], available_colors: List[str],

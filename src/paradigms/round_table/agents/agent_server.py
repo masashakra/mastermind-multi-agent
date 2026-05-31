@@ -179,11 +179,15 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
 
         except Exception as e:
             print(f"[Analyzer] Error: {e}")
-            error_msg = A2AMessage.error(
-                request_msg=msg if 'msg' in locals() else None,
-                error_message=str(e)
-            )
-            return error_msg.to_dict()
+            if 'msg' in locals():
+                from communication.a2a_message import A2AErrorCode
+                error_msg = A2AMessage.error(
+                    request=msg,
+                    error_code=A2AErrorCode.INTERNAL_ERROR,
+                    error_message=str(e)
+                )
+                return error_msg.to_dict()
+            return {"error": str(e)}
 
     return app
 

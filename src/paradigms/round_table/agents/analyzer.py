@@ -40,16 +40,18 @@ class AnalyzerAgent(BaseAgent):
         team_members: Optional[List[str]] = None,
         can_communicate: bool = True,
         constraints_owned: Optional[List[str]] = None,
+        registry_url: Optional[str] = None,
     ):
         super().__init__(
-            name="Analyzer_BossWorker",
+            name="Analyzer_RoundTable",
             provider=provider,
             comm_layer=comm_layer,
             role=role or AgentRole.ANALYZER,
-            paradigm=paradigm or ParadigmType.BOSS_WORKER,
-            team_members=team_members or ["boss", "strategist", "proposer", "validator"],
+            paradigm=paradigm or ParadigmType.ROUND_TABLE,
+            team_members=team_members or ["strategist", "proposer", "validator"],
             can_communicate=can_communicate,
             constraints_owned=constraints_owned or ["Constraint extraction"],
+            registry_url=registry_url,
         )
 
     def analyze_feedback(
