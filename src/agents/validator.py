@@ -238,75 +238,103 @@ class ValidatorAgent(BaseAgent):
             if constraint_lines:
                 constraints_text = "\n".join(constraint_lines)
 
-        prompt = f"""You are the Validator for a Mastermind puzzle solver.
+        prompt = f"""You are the VALIDATOR in a Mastermind puzzle solver.
 
-VALIDATION RULES (CRITICAL):
-1. Guess must have exactly {expected_length} pegs, all valid colors
-2. Never move a color from a LOCKED position (it's confirmed correct)
-3. Never use a color from the IMPOSSIBLE list (already eliminated)
-4. For MISPLACED colors: they MUST appear in the guess, but in a DIFFERENT position
+ROLE: Verify guess is valid before irreversible submission. This is the FINAL check.
+
+VALIDATION PROCESS (Must Follow All Steps):
+
+HARD CONSTRAINTS (Programmatic Checks):
+□ Format: Guess must have exactly {expected_length} pegs
+□ Valid colors: All colors must be in available list {available_colors}
+□ Locked positions: Must match exactly (this is confirmed correct)
+□ Impossible colors: Must never appear (already eliminated)
+
+SOFT CONSTRAINTS (Reasoning Checks):
+□ Repetition: Not a duplicate of any previous guess
+□ Misplaced positioning: Misplaced colors appear in NEW positions (not same spot)
+□ Strategic alignment: Guess makes sense given the strategy
 
 WORKED EXAMPLES:
 
-Example 1 - Valid guess (respects all constraints):
+EXAMPLE 1 - VALID (Respects All Constraints):
 Constraints:
-- LOCKED: [position 0→red]
-- MISPLACED: [blue (not at 1), yellow (not at 3)]
-- IMPOSSIBLE: [white, black]
+  - LOCKED: [position 0→red]
+  - MISPLACED: [blue (was at position 1), yellow (was at position 3)]
+  - IMPOSSIBLE: [white, black]
 Proposed guess: ["red", "yellow", "blue", "purple"]
-→ Position 0: Red (locked, correct) ✓
-→ Position 1: Yellow (misplaced, new position) ✓
-→ Position 2: Blue (misplaced, new position) ✓
-→ Position 3: Purple (new color, allowed) ✓
-VALID: All constraints satisfied
 
-Example 2 - Invalid guess (violates locked position):
-Constraints:
-- LOCKED: [position 0→red, position 2→green]
-- MISPLACED: [blue]
-Proposed guess: ["blue", "red", "green", "black"]
-→ Position 0: Blue (but should be RED) ✗
-INVALID: Violates locked position constraint
+Validation Steps:
+  ✓ Step 1 Format: 4 pegs = {expected_length} pegs
+  ✓ Step 2 Colors: red, yellow, blue, purple all in available list
+  ✓ Step 3 Locked: Position 0 = red (correct, matches LOCKED)
+  ✓ Step 4 Impossible: No white or black used
+  ✓ Step 5 Misplaced: blue at position 2 (different from position 1 ✓), yellow at position 1 (different from position 3 ✓)
+  ✓ Step 6 Repetition: Not in previous guesses
+Result: VALID ✓
 
-Example 3 - Invalid guess (uses impossible color):
+EXAMPLE 2 - INVALID (Violates Locked Position):
 Constraints:
-- LOCKED: [position 1→blue]
-- MISPLACED: [red]
-- IMPOSSIBLE: [yellow, white, black]
+  - LOCKED: [position 0→red, position 2→green]
+Proposed guess: ["blue", "red", "green", "yellow"]
+
+Validation Steps:
+  ✗ Step 3 Locked: Position 0 = blue, but MUST be red
+Result: INVALID - Hard constraint violation ✗
+
+EXAMPLE 3 - INVALID (Uses Impossible Color):
+Constraints:
+  - IMPOSSIBLE: [yellow, white, black]
 Proposed guess: ["red", "blue", "yellow", "purple"]
-→ Position 3: Yellow (impossible!) ✗
-INVALID: Uses impossible color (yellow)
 
-Example 4 - Invalid guess (misplaced in same position):
+Validation Steps:
+  ✗ Step 4 Impossible: Yellow is in impossible list but appears at position 2
+Result: INVALID - Hard constraint violation ✗
+
+EXAMPLE 4 - INVALID (Misplaced in Same Position):
 Constraints:
-- LOCKED: [position 2→green]
-- MISPLACED: [blue (not at 1)]
-Proposed guess: ["yellow", "blue", "green", "orange"]
-→ Position 1: Blue (same position as before!) ✗
-INVALID: Misplaced color must be in new position
+  - MISPLACED: [blue (was at position 1)]
+Proposed guess: ["red", "blue", "green", "yellow"]
+
+Validation Steps:
+  ✗ Step 5 Misplaced: Blue is at position 1 (same as before, not a new position)
+Result: INVALID - Soft constraint violation ✗
 
 TASK:
 
 Guess to validate: {guess}
 Pegs needed: {expected_length}
+Available colors: {available_colors}
+
 Constraints:
 {constraints_text}
-Available colors: {available_colors}
-Previous guesses: {prev_guesses_str if prev_guesses_str else "None"}
 
-OUTPUT (ONLY JSON, no markdown):
+Previous guesses:
+{prev_guesses_str if prev_guesses_str else "None"}
+
+OUTPUT (JSON ONLY, no markdown, no explanation):
 {{
+  "validation_steps": [
+    "Step 1 Format: [result]",
+    "Step 2 Colors: [result]",
+    "Step 3 Locked: [result]",
+    "Step 4 Impossible: [result]",
+    "Step 5 Misplaced: [result]",
+    "Step 6 Repetition: [result]"
+  ],
   "is_valid": true,
   "ready_to_submit": true,
   "errors": [],
   "warnings": [],
   "constraint_check": {{
-    "locked_positions": "All locked positions preserved",
-    "impossible_colors": "No impossible colors used",
+    "locked_positions": "All preserved",
+    "impossible_colors": "None used",
     "misplaced_colors": "All in new positions",
-    "format": "Correct"
+    "format": "Correct",
+    "repetition": "Not a repeat"
   }},
-  "comments": "Guess respects all constraints"
+  "confidence_score": 0.95,
+  "comments": "Guess satisfies all hard and soft constraints"
 }}"""
 
         response = self.call_llm(prompt)

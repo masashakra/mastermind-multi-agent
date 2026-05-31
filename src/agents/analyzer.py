@@ -38,26 +38,82 @@ class AnalyzerAgent(BaseAgent):
             for i, g in enumerate(previous_guesses[-3:])  # Last 3 rounds
         )
 
-        prompt = f"""SYSTEM: Analyze Mastermind feedback. Be CONSERVATIVE - only identify locked positions if CERTAIN.
+        prompt = f"""You are the ANALYZER in a Mastermind puzzle solver.
+
+ROLE: Extract constraints from feedback with explicit logical reasoning.
+
+CONSTRAINT EXTRACTION LOGIC (Think Step-by-Step):
+
+Step 1: IDENTIFY EXISTING COLORS
+  - How many total colors exist in code? (from correct_pegs count)
+  - Which colors from the guess might be the ones that exist?
+
+Step 2: IDENTIFY LOCKED POSITIONS
+  - How many positions are correct? (from correct_positions count)
+  - Which positions changed from last round?
+  - A position is LOCKED only if: color is in guess AND feedback increased
+
+Step 3: IDENTIFY MISPLACED COLORS
+  - If we have more correct_pegs than correct_positions: some colors exist but are misplaced
+  - Which colors from this guess might be misplaced?
+
+Step 4: IDENTIFY IMPOSSIBLE COLORS
+  - If a color was in the guess but didn't increase either count: that color doesn't exist
+
+Step 5: CONFIDENCE ASSESSMENT
+  - How certain are we of each constraint?
+
+WORKED EXAMPLE:
+Last Guess: [red, blue, green, yellow]
+Feedback: 2 colors exist, 1 correct position
+Previous: [red, blue, white, black] → 1 color exists, 0 correct
+
+Reasoning:
+  Step 1: 2 colors exist total. From last round 1 color existed (red or blue).
+          This round has 2, so one new color was found. New colors are green/yellow.
+  Step 2: 1 position correct. We had 0 before, so we just locked 1 position.
+          Red at 0, blue at 1, green at 2, yellow at 3 are all new positions.
+          One of these 4 positions is now locked.
+  Step 3: Misplaced = correct_pegs - correct_positions = 2 - 1 = 1
+          One color exists but is in wrong position.
+  Step 4: White and black were in previous guess but didn't improve, so IMPOSSIBLE.
+  Step 5: Medium confidence (1 round of data is limited).
+
+Constraints:
+  - Correct positions: [{{"position": ?, "color": ?}}] (1 of 4 positions locked)
+  - Misplaced colors: [one of red/blue/green/yellow]
+  - Impossible colors: [white, black]
+  - Analysis: Found 2 colors, 1 locked. Need to identify which position and find other 2 colors.
 
 LAST GUESS: {last_guess}
 FEEDBACK: {correct_pegs} total colors exist, {correct_positions} in correct positions
 
-RULES:
-- A position is LOCKED only if the color at that position is NEW (never tested there before) AND feedback shows locked positions increased
-- If feedback is UNCHANGED from previous round, don't declare new locked positions
-- Only mark colors IMPOSSIBLE if they were in the guess but didn't help the feedback count
-
-PREVIOUS GUESSES:
+PREVIOUS GUESSES (last 3 rounds):
 {history_text}
 
-RESPOND WITH ONLY THIS JSON:
+OUTPUT (JSON ONLY):
 {{
-  "correct_positions": [],
-  "correct_colors_wrong_position": ["green"],
-  "impossible_colors": ["red", "blue"],
-  "constraints": ["green exists but not at position 0"],
-  "analysis": "Found 1 color, need to test positions"
+  "reasoning_steps": [
+    "Step 1 Colors: [analysis]",
+    "Step 2 Locks: [analysis]",
+    "Step 3 Misplaced: [analysis]",
+    "Step 4 Impossible: [analysis]",
+    "Step 5 Confidence: [assessment]"
+  ],
+  "correct_positions": [
+    {{"position": 0, "color": "red"}}
+  ],
+  "correct_colors_wrong_position": ["green", "yellow"],
+  "impossible_colors": ["blue", "white"],
+  "constraints": [
+    "Position 0: red (LOCKED)",
+    "green exists but not at position 2",
+    "yellow exists but not at position 3",
+    "blue is IMPOSSIBLE",
+    "white is IMPOSSIBLE"
+  ],
+  "analysis": "Found 3 colors (red locked, green/yellow misplaced), eliminated 2",
+  "confidence": 0.85
 }}"""
 
         response = self.call_llm(prompt)

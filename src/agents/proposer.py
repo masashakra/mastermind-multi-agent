@@ -42,31 +42,73 @@ class ProposerAgent(BaseAgent):
         else:
             locked_section = "LOCKED POSITIONS: None yet\n"
 
-        prompt = f"""SYSTEM: Generate a Mastermind guess.
+        prompt = f"""You are the PROPOSER in a Mastermind puzzle solver.
 
-CRITICAL RULES (FOLLOW EXACTLY):
-1. Positions 0-{num_pegs-1} that are LOCKED must stay LOCKED with the exact same color
-2. Colors not in the available list are FORBIDDEN
-3. Colors in the impossible list are FORBIDDEN
-4. Generate ONLY valid guesses
+ROLE: Generate a specific guess that respects constraints and tests the strategy.
 
-STRATEGY: {strategy}
+CONSTRAINT-RESPECTING REASONING (Must Follow This Order):
+
+Step 1: LOCKED POSITIONS VERIFICATION
+  Identify which positions are 100% confirmed (DO NOT CHANGE THESE)
+  {locked_section}
+
+Step 2: IMPOSSIBLE COLORS INVENTORY
+  Identify colors to completely avoid
+  IMPOSSIBLE COLORS (NEVER use): {', '.join(colors_to_avoid) if colors_to_avoid else "None"}
+
+Step 3: MISPLACED COLORS PLANNING
+  Identify colors that exist but must move to different positions
+  Strategy: {strategy}
+
+Step 4: AVAILABLE COLORS SELECTION
+  Identify colors we can choose from for open positions
+  AVAILABLE COLORS (only use these): {', '.join(valid_colors)}
+
+Step 5: GUESS CONSTRUCTION
+  Build the guess while respecting all constraints
+
+WORKED EXAMPLE:
+Constraints: Position 0=red (locked), Misplaced=[blue, green], Impossible=[white, black]
+Strategy: "Test blue and green in new positions, find 2 new colors"
+Available: [red, blue, green, yellow, purple, orange]
+
+Reasoning:
+  Step 1: Position 0 MUST be red (locked)
+  Step 2: Never use white or black
+  Step 3: Blue and green exist but need different positions (currently blue=1, green=2)
+  Step 4: Can pick from [red, blue, green, yellow, purple, orange]
+  Step 5:
+    - Position 0: red (locked, must be)
+    - Position 1: blue? No, was position 1. Try position 3.
+    - Position 2: green? No, was position 2. Try position 1.
+    - Position 3: Use new color = yellow
+
+Result: [red, green, blue, yellow]
+Justification: "Keeps red locked at position 0, moves blue/green to new positions, tests yellow"
 
 CONSTRAINTS (recent discoveries):
 {constraints_text}
 
-{locked_section}
-
-IMPOSSIBLE COLORS (never use): {', '.join(colors_to_avoid) if colors_to_avoid else "None"}
-AVAILABLE COLORS (only use these): {', '.join(valid_colors)}
-
 FILL IN THE BLANKS (keep locked positions exactly as shown):
 {self._build_template_from_locked(locked_positions, num_pegs, valid_colors)}
 
+VALIDATION CHECKLIST (Before responding):
+□ All {num_pegs} positions filled
+□ Locked positions match exactly (verify each one)
+□ No impossible colors used
+□ All colors from valid list only
+□ Misplaced colors are in NEW positions
+
 RESPOND WITH ONLY THIS JSON (no markdown, no explanation):
 {{
-  "proposed_guess": ["pos0_color", "pos1_color", "pos2_color", "pos3_color"],
-  "justification": "one sentence"
+  "reasoning": {{
+    "locked_check": "Which positions are locked and preserved",
+    "impossible_check": "No impossible colors used",
+    "misplaced_check": "How misplaced colors are positioned differently",
+    "new_colors": "Which new colors are being tested"
+  }},
+  "proposed_guess": ["color0", "color1", "color2", "color3"],
+  "justification": "Why this guess respects constraints and tests strategy"
 }}"""
 
         response = self.call_llm(prompt)

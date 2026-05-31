@@ -41,33 +41,66 @@ class StrategistAgent(BaseAgent):
         # Format feedback for prompt
         feedback_text = self._format_feedback(guess_history)
 
-        prompt = f"""SYSTEM: You are analyzing a Mastermind game. The goal is to guess a 4-color code.
+        prompt = f"""You are the STRATEGIST in a Mastermind puzzle solver.
 
-CONTEXT:
+ROLE: Analyze feedback patterns and propose the next strategic direction.
+
+STRATEGIC REASONING (Think Step-by-Step):
+
+Step 1: ASSESSMENT - What do we know so far?
+  - How many colors have we found?
+  - How many positions are locked?
+  - What colors are impossible?
+
+Step 2: PHASE IDENTIFICATION - Where are we in the puzzle?
+  - EXPLORATION: Testing which colors exist
+  - CONSTRAINT_BUILDING: Testing found colors in different positions
+  - REFINEMENT: Locking positions one by one
+  - CONFIRMATION: Final verification when nearly solved
+
+Step 3: OPPORTUNITY - What information is most valuable next?
+  - Unknown positions? Test more position variations
+  - Unknown colors? Test new colors
+  - Locks uncertain? Try different arrangements
+
+Step 4: STRATEGY - What should we test and why?
+
+WORKED EXAMPLE:
+History:
+  Round 1: [red, blue, green, yellow] → 2 colors exist, 0 in right position
+  Round 2: [red, green, white, black] → 2 colors exist, 1 in right position (improvement!)
+
+Reasoning:
+  Step 1: We have 2 colors from round 1. Red+green or red+blue or blue+green?
+          Round 2 had red+green and got 2 colors + 1 position, so likely red+green exist.
+          We also know one of red/green is locked.
+  Step 2: We're in CONSTRAINT_BUILDING phase (know colors, testing positions)
+  Step 3: Need to identify which of red/green is locked, and find other 2 colors
+  Step 4: Test different arrangements of red/green, and try new colors
+
+Strategy: "Keep red and green, vary their positions, introduce 2 new colors"
+Phase: CONSTRAINT_BUILDING
+Confidence: 0.8
+
+GAME PROGRESS:
 {feedback_text}
 
-TASK: Determine the strategy for the next guess.
+Difficulty: {difficulty}
 
-RULES:
-- Exploration phase: Test diverse colors to find which ones exist
-- Constraint-building: Test found colors in different positions
-- Refinement: Lock positions one by one
-- Confirmation: Final guess when nearly solved
+TASK: Analyze the game state and propose the next strategic approach.
 
-RESPOND WITH ONLY THIS JSON (no other text):
+OUTPUT (JSON ONLY):
 {{
   "phase": "EXPLORATION or CONSTRAINT_BUILDING or REFINEMENT or CONFIRMATION",
-  "analysis": "Brief description of what we know",
-  "strategy": "One sentence strategy for next guess",
-  "confidence": 0.5
-}}
-
-Example output:
-{{
-  "phase": "EXPLORATION",
-  "analysis": "No information yet",
-  "strategy": "Test 4 diverse colors to find which exist",
-  "confidence": 0.5
+  "reasoning_steps": [
+    "Step 1 Assessment: [what we know]",
+    "Step 2 Phase: [where we are]",
+    "Step 3 Opportunity: [what's most valuable]",
+    "Step 4 Strategy: [what to do next and why]"
+  ],
+  "analysis": "Summary of what we learned so far",
+  "strategy": "Specific next direction (2-3 sentences)",
+  "confidence": 0.75
 }}"""
 
         response = self.call_llm(prompt)
