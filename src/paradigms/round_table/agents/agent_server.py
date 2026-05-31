@@ -158,10 +158,16 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
             action = routing.get("action", "strategy")
 
             # Validate routing decision
+            peer_actions = {"analyzer": "analyze", "strategist": "strategy", "proposer": "propose", "validator": "validate"}
+            expected_action = peer_actions.get(next_peer, "strategy")
+
             if next_peer not in available_peers:
-                print(f"[Analyzer] WARNING: Invalid routing decision '{next_peer}' not in {available_peers}. Using fallback.")
+                print(f"[Analyzer] WARNING: Invalid peer '{next_peer}' not in {available_peers}. Using fallback.")
                 next_peer = available_peers[0] if available_peers else "strategist"
-                action = "strategy"
+                action = peer_actions.get(next_peer, "strategy")
+            elif action != expected_action:
+                print(f"[Analyzer] WARNING: Wrong action '{action}' for peer '{next_peer}'. Expected '{expected_action}'.")
+                action = expected_action
 
             print(f"[Analyzer] Decision: send to {next_peer} via /{action}")
 
@@ -261,10 +267,16 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
             action = routing.get("action", "propose")
 
             # Validate routing decision
+            peer_actions = {"analyzer": "analyze", "strategist": "strategy", "proposer": "propose", "validator": "validate"}
+            expected_action = peer_actions.get(next_peer, "propose")
+
             if next_peer not in available_peers:
-                print(f"[Strategist] WARNING: Invalid routing decision '{next_peer}' not in {available_peers}. Using fallback.")
+                print(f"[Strategist] WARNING: Invalid peer '{next_peer}' not in {available_peers}. Using fallback.")
                 next_peer = available_peers[0] if available_peers else "proposer"
-                action = "propose"
+                action = peer_actions.get(next_peer, "propose")
+            elif action != expected_action:
+                print(f"[Strategist] WARNING: Wrong action '{action}' for peer '{next_peer}'. Expected '{expected_action}'.")
+                action = expected_action
 
             print(f"[Strategist] Decision: send to {next_peer} via /{action}")
 
@@ -370,10 +382,16 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             action = routing.get("action", "validate")
 
             # Validate routing decision
+            peer_actions = {"analyzer": "analyze", "strategist": "strategy", "proposer": "propose", "validator": "validate"}
+            expected_action = peer_actions.get(next_peer, "validate")
+
             if next_peer not in available_peers:
-                print(f"[Proposer] WARNING: Invalid routing decision '{next_peer}' not in {available_peers}. Using fallback.")
+                print(f"[Proposer] WARNING: Invalid peer '{next_peer}' not in {available_peers}. Using fallback.")
                 next_peer = available_peers[0] if available_peers else "validator"
-                action = "validate"
+                action = peer_actions.get(next_peer, "validate")
+            elif action != expected_action:
+                print(f"[Proposer] WARNING: Wrong action '{action}' for peer '{next_peer}'. Expected '{expected_action}'.")
+                action = expected_action
 
             print(f"[Proposer] Decision: send to {next_peer} via /{action}")
 
@@ -512,10 +530,16 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
                 action = routing.get("action", "propose")
 
                 # Validate routing decision
+                peer_actions = {"analyzer": "analyze", "strategist": "strategy", "proposer": "propose", "validator": "validate"}
+                expected_action = peer_actions.get(next_peer, "propose")
+
                 if next_peer not in available_peers:
-                    print(f"[Validator] WARNING: Invalid routing decision '{next_peer}' not in {available_peers}. Using fallback.")
+                    print(f"[Validator] WARNING: Invalid peer '{next_peer}' not in {available_peers}. Using fallback.")
                     next_peer = available_peers[0] if available_peers else "proposer"
-                    action = "propose"
+                    action = peer_actions.get(next_peer, "propose")
+                elif action != expected_action:
+                    print(f"[Validator] WARNING: Wrong action '{action}' for peer '{next_peer}'. Expected '{expected_action}'.")
+                    action = expected_action
 
                 print(f"[Validator] Decision: send back to {next_peer} for revision")
 
