@@ -402,12 +402,12 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
     @app.post("/validate")
     async def handle_validate(request: Request):
-        """Receive A2AMessage, process, autonomously route (usually to orchestrator)."""
+        """Receive A2AMessage, process, autonomously route (to orchestrator if valid)."""
         try:
             request_data = await request.json()
             msg = A2AMessage.from_dict(request_data)
 
-            guess = msg.payload.get("guess", [])
+            guess = msg.payload.get("guess", msg.payload.get("proposed_guess", []))
             available_colors = msg.payload.get("available_colors", [])
             expected_length = msg.payload.get("expected_length", 4)
             guess_history = msg.payload.get("guess_history", [])
@@ -422,26 +422,50 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
                 constraints=constraints
             )
 
-            # Autonomously decide where to send (could go back to proposer for revision, or to orchestrator)
-            game_state = msg.payload
-            available_peers = ["analyzer", "strategist", "proposer"]  # Could revise, or could go to orchestrator
+            # Add the guess to result so orchestrator gets it
+            result["proposed_guess"] = guess
+            result["guess"] = guess
 
-            routing = await agent.decide_next_peer(
-                my_work=result,
-                available_peers=available_peers,
-                game_state=game_state
-            )
+            # Check if valid
+            is_valid = result.get("valid", False)
 
-            next_peer = routing.get("next_peer", "proposer")
-            action = routing.get("action", "propose")
-
-            # Special case: if valid, send to orchestrator instead
-            if result.get("valid", False):
-                print(f"[Validator] Valid guess! Sending to orchestrator...")
-                # Orchestrator will be available to receive results
-                # For now, we store it and orchestrator polls for it
+            if is_valid:
+                print(f"[Validator] ✓ Valid guess! Sending to orchestrator...")
+                # Send to orchestrator's /receive_validation endpoint
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        orch_msg = A2AMessage.request(
+                            sender_id="validator_round_table",
+                            receiver_id="orchestrator_round_table",
+                            action="receive_validation",
+                            payload=result
+                        )
+                        orch_resp = await client.post(
+                            "http://localhost:8107/receive_validation",
+                            json=orch_msg.to_dict(),
+                            timeout=10.0
+                        )
+                        print(f"[Validator] Orchestrator received validation (status={orch_resp.status_code})")
+                except Exception as e:
+                    print(f"[Validator] Error sending to orchestrator: {e}")
             else:
-                print(f"[Validator] Invalid guess, decision: send to {next_peer} via /{action}")
+                print(f"[Validator] ✗ Invalid guess, autonomously deciding next step...")
+
+                # Autonomously decide where to send for revision
+                game_state = msg.payload.copy()
+                game_state["validation_errors"] = result.get("hard_violations", [])
+                available_peers = ["proposer"]  # Send back to proposer for revision
+
+                routing = await agent.decide_next_peer(
+                    my_work=result,
+                    available_peers=available_peers,
+                    game_state=game_state
+                )
+
+                next_peer = routing.get("next_peer", "proposer")
+                action = routing.get("action", "propose")
+
+                print(f"[Validator] Decision: send back to {next_peer} for revision")
 
                 try:
                     await agent.send_a2a_message(

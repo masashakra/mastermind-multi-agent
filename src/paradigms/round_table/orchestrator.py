@@ -1,63 +1,184 @@
-# Round-Table Paradigm Orchestrator
-# Peer-to-peer collaboration. All agents equal, can communicate directly via A2A
+# Round-Table Paradigm Orchestrator (Async Peer-to-Peer)
+# True autonomous peer-to-peer with agents making their own routing decisions
 
 import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 import time
-from typing import Dict, Any, List
+import asyncio
+import threading
+import httpx
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+from fastapi import FastAPI, Request
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from game_engine import GameEngine
 from puzzle_generator import load_puzzles
-from communication.protocol import A2ACommunicationLayer
-from paradigms.round_table.agents import (
-    AnalyzerAgent,
-    StrategistAgent,
-    ProposerAgent,
-    ValidatorAgent,
-    LoggerAgent,
-    MetricsAgent,
-)
+from communication.a2a_message import A2AMessage, A2AStatus
+from registry.registry_server import start_registry_server
+from paradigms.round_table.agents.agent_server import start_agent_servers
+import uvicorn
 
 
 class RoundTableOrchestrator:
-    """Orchestrates the Round-Table paradigm (peer-to-peer collaboration)
+    """Autonomous Peer-to-Peer Round-Table Paradigm
 
-    Structure:
-    - No boss/coordinator
-    - All 4 agents are peers with equal status
-    - Agents can communicate directly with each other via A2A
-    - Orchestrator initiates workflow but agents can also message each other
-    - Round-table discussions where all voices are heard equally
+    Architecture:
+    - Registry (8100): Agent discovery
+    - Analyzer (8101): Autonomous analyzer agent
+    - Strategist (8102): Autonomous strategist agent
+    - Proposer (8103): Autonomous proposer agent
+    - Validator (8104): Autonomous validator agent
+    - Orchestrator (8107): Receives final results, manages feedback loop
+
+    Workflow per round:
+    1. Orchestrator sends initial feedback to Analyzer
+    2. Analyzer processes, decides next peer, sends A2A message autonomously
+    3. Agents form a peer network, messages flow between them
+    4. Validator eventually sends final guess to Orchestrator
+    5. Orchestrator submits to game engine
+    6. If not solved: loop back with new feedback
     """
 
-    def __init__(self, puzzle: Dict[str, Any], provider: str = "ollama"):
-        """Initialize orchestrator for one puzzle
-
-        Args:
-            puzzle: Puzzle dictionary from puzzle_generator
-            provider: LLM provider ("ollama", "groq", "claude", "kaggle")
-        """
+    def __init__(self, puzzle: Dict[str, Any], provider: str = "kaggle"):
         self.puzzle = puzzle
         self.provider = provider
         self.paradigm = "round_table"
         self.game_engine = GameEngine(puzzle["secret_code"], puzzle["difficulty"])
         self.start_time = time.time()
 
-        # A2A Communication (in-process only for round-table)
-        self.comm_layer = A2ACommunicationLayer()
+        # Server URLs (will be set during startup)
+        self.registry_url: Optional[str] = None
+        self.agent_urls: Optional[Dict[str, str]] = None
+        self.orchestrator_url: str = "http://localhost:8107"
 
-        # Initialize all agents as peers (no boss/hierarchy)
-        self.analyzer = AnalyzerAgent(provider=provider, comm_layer=self.comm_layer)
-        self.strategist = StrategistAgent(provider=provider, comm_layer=self.comm_layer)
-        self.proposer = ProposerAgent(provider=provider, comm_layer=self.comm_layer)
-        self.validator = ValidatorAgent(provider=provider, comm_layer=self.comm_layer)
-        self.logger = LoggerAgent(paradigm_name=self.paradigm)
-        self.metrics = MetricsAgent(paradigm_name=self.paradigm)
+        # State for receiving validator response
+        self.last_validation: Optional[Dict[str, Any]] = None
+        self.validation_received = threading.Event()
 
-    def run(self) -> Dict[str, Any]:
-        """Run one complete puzzle with Round-Table paradigm
+    async def _start_servers(self) -> None:
+        """Start registry, agent servers, and orchestrator server."""
+        print("[Orchestrator] Starting servers...")
+
+        # Start registry
+        self.registry_url = await asyncio.to_thread(
+            start_registry_server, 8100
+        )
+        print(f"[Orchestrator] Registry up at {self.registry_url}")
+
+        # Start agent servers
+        self.agent_urls = await asyncio.to_thread(
+            start_agent_servers,
+            self.provider,
+            self.registry_url,
+            8101  # base port
+        )
+        print(f"[Orchestrator] Workers online: {list(self.agent_urls.keys())}")
+
+        # Start orchestrator HTTP server to receive validation
+        app = self._create_orchestrator_app()
+
+        def run_orch_server():
+            uvicorn.run(
+                app,
+                host="127.0.0.1",
+                port=8107,
+                log_level="error",
+            )
+
+        thread = threading.Thread(target=run_orch_server, daemon=True)
+        thread.start()
+
+        # Wait for orchestrator to be ready
+        await asyncio.sleep(0.5)
+        print(f"[Orchestrator] HTTP server listening at {self.orchestrator_url}")
+
+    def _create_orchestrator_app(self) -> FastAPI:
+        """Create FastAPI app for orchestrator to receive validation results."""
+        app = FastAPI(title="Round-Table Orchestrator")
+
+        @app.get("/health")
+        async def health():
+            return {"status": "ok", "service": "round_table_orchestrator"}
+
+        @app.post("/receive_validation")
+        async def receive_validation(request: Request):
+            """Receive final validated guess from Validator agent."""
+            try:
+                request_data = await request.json()
+                msg = A2AMessage.from_dict(request_data)
+
+                print(f"[Orchestrator] Received validation from {msg.sender_id}")
+
+                # Extract guess
+                guess = msg.payload.get("proposed_guess", msg.payload.get("guess", []))
+                valid = msg.payload.get("valid", False)
+
+                self.last_validation = {
+                    "guess": guess,
+                    "valid": valid,
+                    "payload": msg.payload
+                }
+
+                # Signal that validation is received
+                self.validation_received.set()
+
+                # Return response
+                response = A2AMessage.response(
+                    request_msg=msg,
+                    status=A2AStatus.OK,
+                    payload={"received": True, "message": "Guess received by orchestrator"}
+                )
+                return response.to_dict()
+
+            except Exception as e:
+                print(f"[Orchestrator] Error receiving validation: {e}")
+                return {"error": str(e)}
+
+        return app
+
+    async def _send_to_analyzer(self, feedback: Dict[str, int], guess_history: List[Dict]) -> None:
+        """Send initial feedback to Analyzer to start the round.
+
+        This triggers the peer-to-peer chain reaction.
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            analyzer_url = self.agent_urls.get("analyzer")
+            if not analyzer_url:
+                raise RuntimeError("Analyzer not found in agent URLs")
+
+            # Create A2A request
+            msg = A2AMessage.request(
+                sender_id="orchestrator_round_table",
+                receiver_id="analyzer_round_table",
+                action="analyze",
+                payload={
+                    "last_guess": guess_history[-1]["guess"] if guess_history else [],
+                    "feedback": feedback,
+                    "guess_history": guess_history,
+                    "available_colors": self.puzzle.get("available_colors", []),
+                    "difficulty": self.puzzle.get("difficulty", "easy"),
+                }
+            )
+
+            print(f"[Orchestrator] Sending feedback to Analyzer (round {len(guess_history) + 1})")
+
+            try:
+                resp = await client.post(
+                    f"{analyzer_url}/analyze",
+                    json=msg.to_dict(),
+                    timeout=30.0
+                )
+                if resp.status_code == 200:
+                    print(f"[Orchestrator] ✓ Analyzer started processing")
+                else:
+                    print(f"[Orchestrator] ! Analyzer returned {resp.status_code}")
+            except Exception as e:
+                print(f"[Orchestrator] Error calling Analyzer: {e}")
+                raise
+
+    async def run(self) -> Dict[str, Any]:
+        """Run one complete puzzle with Round-Table paradigm.
 
         Returns:
             {
@@ -68,236 +189,138 @@ class RoundTableOrchestrator:
                 "rounds": int,
                 "elapsed_time": float,
                 "guess_history": list,
-                "message_count": int,
-                "token_usage": dict,
-                "agent_stats": dict
             }
         """
-        guess_history = []
-        round_count = 0
+        print("\n" + "="*70)
+        print("ROUND-TABLE PARADIGM — Autonomous Peer-to-Peer")
+        print("="*70)
+        print(f"Puzzle: {self.puzzle['puzzle_id']}")
+        print(f"Secret: {self.puzzle['secret_code']}")
+        print(f"Colors: {self.puzzle.get('available_colors', [])}")
+        print("="*70 + "\n")
 
-        while round_count < 8 and not self.game_engine.is_game_over():
-            round_count += 1
+        try:
+            # Start all servers
+            await self._start_servers()
 
-            try:
-                # Step 1: Analyzer - All agents listen to analysis (peer input)
-                if guess_history:
-                    last_guess = guess_history[-1]
-                    analysis = self.analyzer.analyze_feedback(
-                        last_guess.get("guess", []),
-                        last_guess.get("feedback", {}),
-                        guess_history[:-1]
-                    )
+            guess_history = []
+            round_count = 0
+
+            # Game loop
+            while round_count < 8 and not self.game_engine.is_game_over():
+                round_count += 1
+
+                # Initial feedback (first round is all zeros)
+                if round_count == 1:
+                    feedback = {"correct_pegs": 0, "correct_positions": 0}
                 else:
-                    analysis = {
-                        "correct_positions": [],
-                        "correct_colors_wrong_position": [],
-                        "constraints": [],
-                        "impossible_colors": [],
-                        "analysis": "First round - all codes possible",
-                        "confidence": 0.5
-                    }
+                    feedback = guess_history[-1]["feedback"]
 
-                # Log analysis (peer contribution)
-                self.logger.log_message({
-                    "message_type": "analysis",
-                    "sender": "analyzer",
-                    "receiver": "all_peers",
-                    "round": round_count,
-                    "content": analysis
-                })
+                # Clear the event for new round
+                self.validation_received.clear()
+                self.last_validation = None
 
-                # Step 2: Strategist - Peer proposes strategy based on analysis
-                strategy = self.strategist.propose_strategy(
-                    guess_history,
-                    self.puzzle["difficulty"]
+                # Send feedback to Analyzer (starts the peer chain)
+                await self._send_to_analyzer(feedback, guess_history)
+
+                # Wait for Validator to send back the final guess
+                # Timeout after 60 seconds
+                received = await asyncio.to_thread(
+                    self.validation_received.wait, 60
                 )
 
-                # Log strategy (peer contribution)
-                self.logger.log_message({
-                    "message_type": "strategy",
-                    "sender": "strategist",
-                    "receiver": "all_peers",
-                    "round": round_count,
-                    "content": strategy
-                })
+                if not received:
+                    print(f"[Orchestrator] Timeout waiting for validation")
+                    break
 
-                # Step 3: Proposer - Peer generates guess based on strategy
-                constraints_text = "\n".join(analysis.get("constraints", []))
-                proposal = self.proposer.propose_guess(
-                    strategy=strategy.get("strategy", ""),
-                    constraints_text=constraints_text,
-                    available_colors=self.puzzle.get("available_colors", []),
-                    num_pegs=self.puzzle.get("pegs", 4),
-                    previous_guesses=[g.get("guess", []) for g in guess_history]
-                )
+                if not self.last_validation:
+                    print(f"[Orchestrator] No validation received")
+                    break
 
-                # Log proposal (peer contribution)
-                self.logger.log_message({
-                    "message_type": "proposal",
-                    "sender": "proposer",
-                    "receiver": "all_peers",
-                    "round": round_count,
-                    "content": proposal
-                })
+                guess = self.last_validation.get("guess", [])
 
-                # Step 4: Validator - Peer validates guess for whole table
-                guess = proposal.get("proposed_guess", [])
-                validation = self.validator.validate_guess(
-                    guess=guess,
-                    available_colors=self.puzzle.get("available_colors", []),
-                    expected_length=self.puzzle.get("pegs", 4),
-                    previous_guesses=[g.get("guess", []) for g in guess_history],
-                    constraints={
-                        "correct_positions": analysis.get("correct_positions", []),
-                        "correct_colors_wrong_position": analysis.get("correct_colors_wrong_position", []),
-                        "impossible_colors": analysis.get("impossible_colors", [])
-                    }
-                )
-
-                # Log validation (peer feedback)
-                self.logger.log_message({
-                    "message_type": "validation",
-                    "sender": "validator",
-                    "receiver": "all_peers",
-                    "round": round_count,
-                    "content": validation
-                })
-
-                # If validation fails, table discusses and retries
-                if not validation.get("valid", True):
-                    self.logger.log_message({
-                        "message_type": "discussion",
-                        "sender": "table",
-                        "receiver": "all_peers",
-                        "round": round_count,
-                        "content": {"discussion": "Invalid guess, round table discussing alternatives", "violations": validation.get("hard_violations", [])}
-                    })
+                # Submit guess to game engine
+                if not guess:
+                    print(f"[Orchestrator] Empty guess, skipping round")
                     continue
 
-                # Step 5: Submit guess to game engine
-                feedback = self.game_engine.submit_guess(guess)
+                print(f"[Orchestrator] Submitting guess: {guess}")
+                resp = self.game_engine.submit_guess(guess)
 
-                if not feedback.get("valid", False):
-                    self.logger.log_message({
-                        "message_type": "error",
-                        "sender": "game_engine",
-                        "receiver": "all_peers",
-                        "round": round_count,
-                        "content": {"error": feedback.get("error", "Invalid guess")}
-                    })
+                if not resp.get("valid", False):
+                    print(f"[Orchestrator] Game engine rejected guess")
                     continue
 
-                # Record in history
+                feedback = resp.get("feedback", {})
+                solved = resp.get("solved", False)
+
                 guess_history.append({
                     "round": round_count,
                     "guess": guess,
-                    "feedback": feedback.get("feedback", {})
+                    "feedback": feedback,
                 })
 
-                # Log feedback (shared knowledge)
-                self.logger.log_message({
-                    "message_type": "feedback",
-                    "sender": "game_engine",
-                    "receiver": "all_peers",
-                    "round": round_count,
-                    "content": {
-                        "correct_pegs": feedback.get("feedback", {}).get("correct_pegs", 0),
-                        "correct_positions": feedback.get("feedback", {}).get("correct_positions", 0),
-                        "solved": feedback.get("solved", False)
-                    }
-                })
+                pegs = feedback.get("correct_pegs", 0)
+                pos = feedback.get("correct_positions", 0)
+                print(f"[Orchestrator] Round {round_count} → {guess} | "
+                      f"pegs={pegs}  pos={pos}" + ("  ✓ SOLVED!" if solved else ""))
 
-                # Record metrics
-                self.metrics.record_metric("round", round_count)
-                self.metrics.record_metric("guess", str(guess))
-                self.metrics.record_metric("correct_pegs", feedback.get("feedback", {}).get("correct_pegs", 0))
-                self.metrics.record_metric("correct_positions", feedback.get("feedback", {}).get("correct_positions", 0))
-
-                # Check if solved
-                if feedback.get("solved", False):
+                if solved:
                     break
 
-            except Exception as e:
-                self.logger.log_message({
-                    "message_type": "error",
-                    "sender": "orchestrator",
-                    "receiver": "all_peers",
-                    "round": round_count,
-                    "content": {"error": str(e)}
-                })
-                continue
+            elapsed_time = time.time() - self.start_time
 
-        elapsed_time = time.time() - self.start_time
+            # Determine success
+            success = False
+            if guess_history:
+                last_feedback = guess_history[-1].get("feedback", {})
+                success = last_feedback.get("correct_positions", 0) == self.puzzle.get("pegs", 4)
 
-        # Determine success
-        success = False
-        if guess_history:
-            last_feedback = guess_history[-1].get("feedback", {})
-            success = last_feedback.get("correct_positions", 0) == self.puzzle.get("pegs", 4)
-
-        # Save metrics
-        self.metrics.record_metric("total_guesses", len(guess_history))
-        self.metrics.record_metric("total_rounds", round_count)
-        self.metrics.record_metric("success", success)
-        self.metrics.save_metrics()
-
-        return {
-            "puzzle_id": self.puzzle["puzzle_id"],
-            "paradigm": self.paradigm,
-            "difficulty": self.puzzle["difficulty"],
-            "success": success,
-            "guesses": len(guess_history),
-            "rounds": round_count,
-            "elapsed_time": elapsed_time,
-            "guess_history": guess_history,
-            "message_count": len(self.logger.logs),
-            "token_usage": {
-                "analyzer": self.analyzer.total_input_tokens + self.analyzer.total_output_tokens,
-                "strategist": self.strategist.total_input_tokens + self.strategist.total_output_tokens,
-                "proposer": self.proposer.total_input_tokens + self.proposer.total_output_tokens,
-                "validator": self.validator.total_input_tokens + self.validator.total_output_tokens,
-                "total": (
-                    self.analyzer.total_input_tokens + self.analyzer.total_output_tokens +
-                    self.strategist.total_input_tokens + self.strategist.total_output_tokens +
-                    self.proposer.total_input_tokens + self.proposer.total_output_tokens +
-                    self.validator.total_input_tokens + self.validator.total_output_tokens
-                )
-            },
-            "agent_stats": {
-                "analyzer": {"calls": self.analyzer.call_count, "tokens": self.analyzer.total_input_tokens + self.analyzer.total_output_tokens},
-                "strategist": {"calls": self.strategist.call_count, "tokens": self.strategist.total_input_tokens + self.strategist.total_output_tokens},
-                "proposer": {"calls": self.proposer.call_count, "tokens": self.proposer.total_input_tokens + self.proposer.total_output_tokens},
-                "validator": {"calls": self.validator.call_count, "tokens": self.validator.total_input_tokens + self.validator.total_output_tokens},
+            result = {
+                "puzzle_id": self.puzzle["puzzle_id"],
+                "paradigm": self.paradigm,
+                "difficulty": self.puzzle.get("difficulty", "easy"),
+                "success": success,
+                "guesses": len(guess_history),
+                "rounds": round_count,
+                "elapsed_time": elapsed_time,
+                "guess_history": guess_history,
             }
-        }
 
+            print("\n" + "="*70)
+            print("RESULT")
+            print("="*70)
+            print(f"Success: {result['success']}")
+            print(f"Guesses: {result['guesses']}")
+            print(f"Rounds: {result['rounds']}")
+            print(f"Elapsed: {result['elapsed_time']:.1f}s")
+            print("="*70 + "\n")
+
+            return result
+
+        except Exception as e:
+            print(f"[Orchestrator] Fatal error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+
+# ── Main entrypoint ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Test: Run one puzzle
-    print("=" * 80)
-    print("ROUND-TABLE PARADIGM TEST")
-    print("=" * 80)
+    import os
 
-    try:
-        puzzles = load_puzzles()
-        test_puzzle = next(p for p in puzzles if p['difficulty'] == 'easy')
+    # Get puzzle
+    puzzles = load_puzzles()
+    puzzle = next(p for p in puzzles if p["puzzle_id"] == "MM_001")
 
-        print(f"\nTesting puzzle: {test_puzzle['puzzle_id']}")
-        print(f"Difficulty: {test_puzzle['difficulty']}")
+    # Get provider from env (default to kaggle)
+    provider = os.getenv("PROVIDER", "kaggle")
 
-        orchestrator = RoundTableOrchestrator(test_puzzle, provider="ollama")
-        result = orchestrator.run()
+    # Run orchestrator
+    orchestrator = RoundTableOrchestrator(puzzle, provider=provider)
 
-        print(f"\nResult:")
-        print(f"  Success: {result['success']}")
-        print(f"  Guesses: {result['guesses']}")
-        print(f"  Rounds: {result['rounds']}")
-        print(f"  Time: {result['elapsed_time']:.1f}s")
-        print(f"  Messages: {result['message_count']}")
-        print(f"  Tokens: {result['token_usage']['total']}")
+    # Run async event loop
+    result = asyncio.run(orchestrator.run())
 
-    except Exception as e:
-        print(f"\nError: {e}")
-        import traceback
-        traceback.print_exc()
+    print(f"Puzzle solved: {result['success']}")
