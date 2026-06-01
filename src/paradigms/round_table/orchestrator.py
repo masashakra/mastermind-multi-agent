@@ -46,6 +46,8 @@ class ConstraintSolver:
     def update(self, guess: List[str], feedback: Dict[str, int]) -> None:
         """Ingest one round's result and update all constraint sets."""
         from collections import Counter
+        # Normalise to lowercase — LLMs sometimes capitalise colors
+        guess = [c.lower() for c in guess]
         pegs = feedback.get("correct_pegs", 0)
         pos  = feedback.get("correct_positions", 0)
 
@@ -245,8 +247,9 @@ class RoundTableOrchestrator:
 
                 print(f"[Orchestrator] Received validation from {msg.sender_id}")
 
-                # Extract guess
+                # Extract guess — normalise case
                 guess = msg.payload.get("proposed_guess", msg.payload.get("guess", []))
+                guess = [c.lower() if isinstance(c, str) else c for c in guess]
                 valid = msg.payload.get("valid", False)
 
                 self.last_validation = {

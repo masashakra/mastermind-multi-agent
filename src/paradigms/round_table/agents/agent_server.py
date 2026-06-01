@@ -489,8 +489,9 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             min_counts = constraints.get("min_color_counts", {})
             valid      = [c for c in (constraints.get("valid_colors") or available_colors) if c] or available_colors
 
+            # Normalise case first — LLMs sometimes capitalise colors
+            fixed = [c.lower() if isinstance(c, str) else c for c in proposed]
             # Fix impossible colors
-            fixed = list(proposed)
             fixed = [c if c not in impossible else _random.choice(valid) for c in fixed]
 
             # Fix locked positions
