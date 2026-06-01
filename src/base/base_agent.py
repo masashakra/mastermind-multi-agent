@@ -236,18 +236,29 @@ class BaseAgent(ABC):
 
         try:
             if self.provider == "kaggle":
-                # Kaggle backend: POST request to remote Ollama-compatible API
+                # Kaggle backend: POST to remote Ollama API with retry on connection drops
                 url = self.llm["url"]
                 model = os.getenv("KAGGLE_MODEL", "llama3.1:8b")
 
-                response = requests.post(
-                    f"{url}/api/generate",
-                    json={"model": model, "prompt": prompt, "stream": False},
-                    timeout=300
-                )
-                response.raise_for_status()
-                result = response.json()
-                return result.get("response", "")
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = requests.post(
+                            f"{url}/api/generate",
+                            json={"model": model, "prompt": prompt, "stream": False},
+                            timeout=300
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        return result.get("response", "")
+                    except (requests.exceptions.ConnectionError,
+                            requests.exceptions.ChunkedEncodingError) as e:
+                        if attempt < max_retries - 1:
+                            wait = 5 * (attempt + 1)
+                            print(f"[{self.name}] Connection dropped, retrying in {wait}s (attempt {attempt+1}/{max_retries})...")
+                            time.sleep(wait)
+                        else:
+                            raise
             elif self.provider == "groq":
                 # Groq API - OpenAI compatible with retry on rate limit
                 max_retries = 3
