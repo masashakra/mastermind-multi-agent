@@ -56,6 +56,16 @@ class RoundTableOrchestrator:
         self.last_validation: Optional[Dict[str, Any]] = None
         self.validation_received = threading.Event()
 
+        # Accumulated knowledge base — grows each round
+        self.knowledge_base: Dict[str, Any] = {
+            "impossible_colors": [],       # Colors confirmed NOT in secret
+            "confirmed_colors": [],        # Colors confirmed IN secret (any position)
+            "locked_positions": {},        # {position: color} — exact matches
+            "impossible_positions": {},    # {color: [positions]} — color not at these positions
+            "constraints": [],             # Plain-English constraint list (all rounds)
+            "min_color_counts": {},        # {color: min_occurrences} e.g. black appears ≥2
+        }
+
     async def _start_servers(self) -> None:
         """Start registry, agent servers, and orchestrator server."""
         print("[Orchestrator] Starting servers...")
@@ -137,6 +147,57 @@ class RoundTableOrchestrator:
 
         return app
 
+    def _update_knowledge_base(self, guess: List[str], feedback: Dict[str, int]) -> None:
+        """Derive hard facts from a guess+feedback pair and merge into knowledge base.
+
+        This runs in the orchestrator after each round so knowledge is never lost.
+        """
+        pegs = feedback.get("correct_pegs", 0)
+        positions = feedback.get("correct_positions", 0)
+        n = len(guess)
+
+        # ── Fact 1: if 0 pegs → every color in this guess is impossible ──────
+        if pegs == 0:
+            for color in set(guess):
+                if color not in self.knowledge_base["impossible_colors"]:
+                    self.knowledge_base["impossible_colors"].append(color)
+                    self.knowledge_base["constraints"].append(
+                        f"{color} is NOT in the secret (0 pegs when guessed)"
+                    )
+
+        # ── Fact 2: if pegs == n → every color in the guess IS confirmed ─────
+        if pegs == n:
+            for color in guess:
+                if color not in self.knowledge_base["confirmed_colors"]:
+                    self.knowledge_base["confirmed_colors"].append(color)
+                    self.knowledge_base["constraints"].append(
+                        f"{color} IS in the secret (confirmed)"
+                    )
+
+        # ── Fact 3: track minimum occurrences ────────────────────────────────
+        # If a color appears k times in the guess and pegs >= k, it appears at least
+        # min(k, pegs) times.  We store the maximum lower-bound seen so far.
+        from collections import Counter
+        guess_counts = Counter(guess)
+        for color, count in guess_counts.items():
+            if color not in self.knowledge_base["impossible_colors"]:
+                lower_bound = min(count, pegs)
+                if lower_bound > 0:
+                    prev = self.knowledge_base["min_color_counts"].get(color, 0)
+                    if lower_bound > prev:
+                        self.knowledge_base["min_color_counts"][color] = lower_bound
+                        self.knowledge_base["constraints"].append(
+                            f"{color} appears at least {lower_bound} time(s) in the secret"
+                        )
+
+        # ── Fact 4: full-match positions (pegs == positions == n) ─────────────
+        if positions == n:
+            for i, color in enumerate(guess):
+                self.knowledge_base["locked_positions"][i] = color
+                self.knowledge_base["constraints"].append(
+                    f"Position {i} is LOCKED as '{color}' (perfect match)"
+                )
+
     async def _send_to_analyzer(self, feedback: Dict[str, int], guess_history: List[Dict]) -> None:
         """Send initial feedback to Analyzer to start the round.
 
@@ -147,7 +208,7 @@ class RoundTableOrchestrator:
             if not analyzer_url:
                 raise RuntimeError("Analyzer not found in agent URLs")
 
-            # Create A2A request
+            # Create A2A request — include accumulated knowledge base
             msg = A2AMessage.request(
                 sender_id="orchestrator_round_table",
                 receiver_id="analyzer_round_table",
@@ -158,6 +219,9 @@ class RoundTableOrchestrator:
                     "guess_history": guess_history,
                     "available_colors": self.puzzle.get("available_colors", []),
                     "difficulty": self.puzzle.get("difficulty", "easy"),
+                    "num_pegs": self.puzzle.get("pegs", 4),
+                    # ← accumulated knowledge that never resets
+                    "knowledge_base": self.knowledge_base,
                 }
             )
 
@@ -260,10 +324,20 @@ class RoundTableOrchestrator:
                     "feedback": feedback,
                 })
 
+                # Update accumulated knowledge base from this round's result
+                self._update_knowledge_base(guess, feedback)
+
                 pegs = feedback.get("correct_pegs", 0)
                 pos = feedback.get("correct_positions", 0)
                 print(f"[Orchestrator] Round {round_count} → {guess} | "
                       f"pegs={pegs}  pos={pos}" + ("  ✓ SOLVED!" if solved else ""))
+
+                # Print knowledge base summary each round
+                kb = self.knowledge_base
+                print(f"[Knowledge] impossible={kb['impossible_colors']} "
+                      f"confirmed={kb['confirmed_colors']} "
+                      f"locked={kb['locked_positions']} "
+                      f"min_counts={kb['min_color_counts']}")
 
                 if solved:
                     break
