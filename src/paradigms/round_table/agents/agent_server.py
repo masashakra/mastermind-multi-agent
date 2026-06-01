@@ -482,13 +482,26 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             proposed = [c.lower() if isinstance(c, str) else c for c in result.get("proposed_guess", [])]
 
             if proposed in past_guesses:
-                print(f"[Proposer] ⚠ Duplicate {proposed}, picking random alternative...")
-                safe = available_colors or ["red", "blue", "green", "yellow", "white", "black"]
-                for _ in range(50):
-                    candidate = [_random.choice(safe) for _ in range(num_pegs or 4)]
-                    if candidate not in past_guesses:
-                        proposed = candidate
-                        break
+                print(f"[Proposer] ⚠ Duplicate {proposed}, asking LLM to try again...")
+                # Ask the LLM again with explicit reminder — uses conversation history
+                retry_result = agent.propose_guess(
+                    strategy=strategy,
+                    constraints_text=f"IMPORTANT: {proposed} was ALREADY guessed! Propose something different.",
+                    available_colors=available_colors,
+                    num_pegs=num_pegs,
+                    previous_guesses=guess_history,
+                )
+                retry = [c.lower() if isinstance(c, str) else c for c in retry_result.get("proposed_guess", [])]
+                if retry and retry not in past_guesses:
+                    proposed = retry
+                else:
+                    # Last resort random
+                    safe = available_colors or ["red", "blue", "green", "yellow", "white", "black"]
+                    for _ in range(50):
+                        candidate = [_random.choice(safe) for _ in range(num_pegs or 4)]
+                        if candidate not in past_guesses:
+                            proposed = candidate
+                            break
 
             result["proposed_guess"] = proposed
 
