@@ -493,10 +493,32 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             }
             outgoing_payload = {**result, **game_context}
 
-            # Proposer always sends to Validator — that is its only job
-            next_peer = "validator"
-            action = "validate"
-            print(f"[Proposer] → Validator (fixed routing)")
+            # Proposer decides autonomously who to send to via LLM
+            game_state = msg.payload
+            available_peers = ["analyzer", "strategist", "validator"]
+
+            routing = await agent.decide_next_peer(
+                my_work=result,
+                available_peers=available_peers,
+                game_state=game_state
+            )
+
+            next_peer = routing.get("next_peer", "validator")
+            action = routing.get("action", "validate")
+
+            # Validate action matches the peer's endpoint
+            peer_actions = {"analyzer": "analyze", "strategist": "strategy", "proposer": "propose", "validator": "validate"}
+            expected_action = peer_actions.get(next_peer, "validate")
+
+            if next_peer not in available_peers:
+                print(f"[Proposer] WARNING: Invalid peer '{next_peer}', using validator.")
+                next_peer = "validator"
+                action = "validate"
+            elif action != expected_action:
+                print(f"[Proposer] WARNING: Wrong action '{action}' for '{next_peer}', correcting to '{expected_action}'.")
+                action = expected_action
+
+            print(f"[Proposer] Decision: send to {next_peer} via /{action}")
 
             # Autonomously send to next peer (fire-and-forget, non-blocking)
             async def send_peer_message():
