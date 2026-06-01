@@ -214,17 +214,32 @@ class BaseAgent(ABC):
                 "model": "qwen/qwen3-32b"  # Reasoning model with <think> tokens
             }
         elif self.provider == "deepseek":
-            # DeepSeek API — OpenAI-compatible, R1 is a full reasoning model
+            # DeepSeek direct API — OR — OpenRouter (free $1 credit)
+            # Priority: OPENROUTER_API_KEY → DEEPSEEK_API_KEY
+            or_key = os.getenv("OPENROUTER_API_KEY")
             ds_key = os.getenv("DEEPSEEK_API_KEY")
-            if not ds_key:
-                raise ValueError("DEEPSEEK_API_KEY not set. Get one at platform.deepseek.com")
-            self.llm = {
-                "api_key": ds_key,
-                "type": "deepseek",
-                "model": "deepseek-reasoner",   # R1: thinks before answering
-                "base_url": "https://api.deepseek.com",
-            }
-            print(f"[{self.name}] DeepSeek R1 ready")
+            if or_key:
+                self.llm = {
+                    "api_key": or_key,
+                    "type": "deepseek",
+                    "model": "deepseek/deepseek-r1",   # R1 via OpenRouter
+                    "base_url": "https://openrouter.ai/api/v1",
+                }
+                print(f"[{self.name}] DeepSeek R1 via OpenRouter")
+            elif ds_key:
+                self.llm = {
+                    "api_key": ds_key,
+                    "type": "deepseek",
+                    "model": "deepseek-reasoner",
+                    "base_url": "https://api.deepseek.com",
+                }
+                print(f"[{self.name}] DeepSeek R1 via DeepSeek API")
+            else:
+                raise ValueError(
+                    "No DeepSeek key found.\n"
+                    "  Free option: sign up at openrouter.ai → set OPENROUTER_API_KEY\n"
+                    "  Paid option: platform.deepseek.com → set DEEPSEEK_API_KEY"
+                )
         elif self.provider == "ollama":
             try:
                 from langchain_ollama import OllamaLLM
