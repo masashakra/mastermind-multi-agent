@@ -493,32 +493,10 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             }
             outgoing_payload = {**result, **game_context}
 
-            # Autonomously decide next peer
-            game_state = msg.payload
-            available_peers = ["analyzer", "strategist", "validator"]
-
-            routing = await agent.decide_next_peer(
-                my_work=result,
-                available_peers=available_peers,
-                game_state=game_state
-            )
-
-            next_peer = routing.get("next_peer", "validator")
-            action = routing.get("action", "validate")
-
-            # Validate routing decision
-            peer_actions = {"analyzer": "analyze", "strategist": "strategy", "proposer": "propose", "validator": "validate"}
-            expected_action = peer_actions.get(next_peer, "validate")
-
-            if next_peer not in available_peers:
-                print(f"[Proposer] WARNING: Invalid peer '{next_peer}' not in {available_peers}. Using fallback.")
-                next_peer = available_peers[0] if available_peers else "validator"
-                action = peer_actions.get(next_peer, "validate")
-            elif action != expected_action:
-                print(f"[Proposer] WARNING: Wrong action '{action}' for peer '{next_peer}'. Expected '{expected_action}'.")
-                action = expected_action
-
-            print(f"[Proposer] Decision: send to {next_peer} via /{action}")
+            # Proposer always sends to Validator — that is its only job
+            next_peer = "validator"
+            action = "validate"
+            print(f"[Proposer] → Validator (fixed routing)")
 
             # Autonomously send to next peer (fire-and-forget, non-blocking)
             async def send_peer_message():
