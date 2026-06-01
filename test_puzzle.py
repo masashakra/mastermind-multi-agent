@@ -17,8 +17,9 @@ if os.path.exists(_env_file):
 from paradigms.round_table.orchestrator import RoundTableOrchestrator
 from puzzle_generator import load_puzzles
 
-# Get puzzle from command line or default to MM_003
-puzzle_id = sys.argv[1] if len(sys.argv) > 1 else "MM_003"
+# Get puzzle and provider from command line
+puzzle_id = sys.argv[1] if len(sys.argv) > 1 else "MM_002"
+provider  = sys.argv[2] if len(sys.argv) > 2 else "groq"
 
 puzzles = load_puzzles()
 puzzle = next((p for p in puzzles if p['puzzle_id'] == puzzle_id), None)
@@ -33,7 +34,8 @@ print(f"Difficulty: {puzzle['difficulty']}")
 print(f"Secret: {puzzle['secret_code']}")
 print(f"{'='*70}\n")
 
-orchestrator = RoundTableOrchestrator(puzzle, provider='kaggle')
+print(f"Provider: {provider}")
+orchestrator = RoundTableOrchestrator(puzzle, provider=provider)
 try:
     result = asyncio.run(orchestrator.run())
     print(f"\n✓ FINAL RESULT:")
