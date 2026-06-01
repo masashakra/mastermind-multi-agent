@@ -227,19 +227,26 @@ class RoundTableOrchestrator:
 
             print(f"[Orchestrator] Sending feedback to Analyzer (round {len(guess_history) + 1})")
 
-            try:
-                resp = await client.post(
-                    f"{analyzer_url}/analyze",
-                    json=msg.to_dict(),
-                    timeout=30.0
-                )
-                if resp.status_code == 200:
-                    print(f"[Orchestrator] ✓ Analyzer started processing")
-                else:
-                    print(f"[Orchestrator] ! Analyzer returned {resp.status_code}")
-            except Exception as e:
-                print(f"[Orchestrator] Error calling Analyzer: {e}")
-                raise
+            for attempt in range(3):
+                try:
+                    resp = await client.post(
+                        f"{analyzer_url}/analyze",
+                        json=msg.to_dict(),
+                        timeout=120.0   # Analyzer may take time calling the LLM
+                    )
+                    if resp.status_code == 200:
+                        print(f"[Orchestrator] ✓ Analyzer started processing")
+                    else:
+                        print(f"[Orchestrator] ! Analyzer returned {resp.status_code}")
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        wait = 10 * (attempt + 1)
+                        print(f"[Orchestrator] Error calling Analyzer (attempt {attempt+1}/3), retrying in {wait}s: {e}")
+                        await asyncio.sleep(wait)
+                    else:
+                        print(f"[Orchestrator] Error calling Analyzer after 3 attempts: {e}")
+                        raise
 
     async def run(self) -> Dict[str, Any]:
         """Run one complete puzzle with Round-Table paradigm.
