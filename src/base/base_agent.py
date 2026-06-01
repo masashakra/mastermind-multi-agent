@@ -188,14 +188,25 @@ class BaseAgent(ABC):
                 raise ValueError("KAGGLE_URL environment variable not set")
             self.llm = {"url": kaggle_url, "type": "kaggle"}
         elif self.provider == "groq":
-            # Groq API - OpenAI compatible
-            groq_key = os.getenv("GROQ_API_KEY")
-            if not groq_key:
-                raise ValueError("GROQ_API_KEY environment variable not set")
+            # Groq API — load all available keys for rotation
+            keys = []
+            # Support GROQ_API_KEY_1 … GROQ_API_KEY_6
+            for i in range(1, 7):
+                k = os.getenv(f"GROQ_API_KEY_{i}")
+                if k:
+                    keys.append(k)
+            # Also accept a single GROQ_API_KEY
+            single = os.getenv("GROQ_API_KEY")
+            if single and single not in keys:
+                keys.append(single)
+            if not keys:
+                raise ValueError("No Groq API keys found. Set GROQ_API_KEY_1 … GROQ_API_KEY_6")
+            print(f"[{self.name}] Groq: {len(keys)} key(s) loaded for rotation")
             self.llm = {
-                "api_key": groq_key,
+                "keys": keys,
+                "key_index": 0,         # current key pointer
                 "type": "groq",
-                "model": "llama-3.1-8b-instant"  # Fast, currently available
+                "model": "llama-3.3-70b-versatile"  # 70b — much smarter than 8b
             }
         elif self.provider == "ollama":
             try:
@@ -230,9 +241,7 @@ class BaseAgent(ABC):
         """
         self.call_count += 1
 
-        # Rate limiting for Groq API (free tier: ~30 req/min = 2 sec per request minimum, but with 5 agents it's ~10 sec)
-        if self.provider == "groq":
-            time.sleep(6.0)
+        # No artificial sleep needed — key rotation handles Groq rate limits
 
         try:
             if self.provider == "kaggle":
@@ -260,31 +269,45 @@ class BaseAgent(ABC):
                         else:
                             raise
             elif self.provider == "groq":
-                # Groq API - OpenAI compatible with retry on rate limit
-                max_retries = 3
-                for attempt in range(max_retries):
+                # Groq API — rotate through keys on rate-limit (429) or timeout
+                keys = self.llm["keys"]
+                total_attempts = len(keys) * 2  # try each key up to twice
+                for attempt in range(total_attempts):
+                    key_idx = self.llm["key_index"] % len(keys)
+                    current_key = keys[key_idx]
                     try:
                         response = requests.post(
                             "https://api.groq.com/openai/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {self.llm['api_key']}"},
+                            headers={"Authorization": f"Bearer {current_key}"},
                             json={
                                 "model": self.llm["model"],
                                 "messages": [{"role": "user", "content": prompt}],
                                 "max_tokens": 1024,
                                 "temperature": 0.7
                             },
-                            timeout=30
+                            timeout=60
                         )
-                        response.raise_for_status()
-                        result = response.json()
-                        return result["choices"][0]["message"]["content"]
-                    except requests.exceptions.HTTPError as e:
-                        if response.status_code == 429 and attempt < max_retries - 1:
-                            # Rate limited - backoff and retry
-                            wait_time = (2 ** attempt) * 5  # 5s, 10s, 20s
-                            time.sleep(wait_time)
+                        if response.status_code == 200:
+                            result = response.json()
+                            return result["choices"][0]["message"]["content"]
+                        elif response.status_code == 429:
+                            # Rate limited — rotate to next key
+                            self.llm["key_index"] = (key_idx + 1) % len(keys)
+                            print(f"[{self.name}] Groq key {key_idx+1} rate-limited, rotating to key {self.llm['key_index']+1}...")
+                            time.sleep(2)
                             continue
-                        raise
+                        else:
+                            response.raise_for_status()
+                    except requests.exceptions.Timeout:
+                        self.llm["key_index"] = (key_idx + 1) % len(keys)
+                        print(f"[{self.name}] Groq key {key_idx+1} timed out, rotating to key {self.llm['key_index']+1}...")
+                        continue
+                    except requests.exceptions.ConnectionError:
+                        self.llm["key_index"] = (key_idx + 1) % len(keys)
+                        print(f"[{self.name}] Groq key {key_idx+1} connection error, rotating to key {self.llm['key_index']+1}...")
+                        time.sleep(2)
+                        continue
+                raise RuntimeError(f"All {len(keys)} Groq keys exhausted after {total_attempts} attempts")
             elif self.provider == "ollama":
                 # OllamaLLM uses invoke() method
                 response = self.llm.invoke(prompt)

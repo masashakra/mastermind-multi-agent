@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
-import sys
+import sys, os
 sys.path.insert(0, 'src')
 import asyncio
+
+# Load .env.groq if it exists
+_env_file = os.path.join(os.path.dirname(__file__), '.env.groq')
+if os.path.exists(_env_file):
+    with open(_env_file) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                if _v.strip() and 'your_key' not in _v:
+                    os.environ.setdefault(_k.strip(), _v.strip())
+
 from paradigms.round_table.orchestrator import RoundTableOrchestrator
 from puzzle_generator import load_puzzles
 
