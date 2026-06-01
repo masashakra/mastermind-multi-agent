@@ -211,7 +211,7 @@ class BaseAgent(ABC):
                 "keys": keys,
                 "key_index": 0,         # current key pointer
                 "type": "groq",
-                "model": "llama-3.3-70b-versatile"  # 70b — much smarter than 8b
+                "model": "qwen/qwen3-32b"  # Reasoning model with <think> tokens
             }
         elif self.provider == "ollama":
             try:
@@ -417,26 +417,41 @@ class BaseAgent(ABC):
         Returns:
             Parsed JSON dictionary or error dict
         """
+        # Strip Qwen3 / DeepSeek-R1 <think>...</think> reasoning blocks first
+        import re as _re
+        clean = _re.sub(r'<think>.*?</think>', '', response, flags=_re.DOTALL).strip()
+        if not clean:
+            clean = response  # fallback if entire response was thinking
+
         try:
             # Try direct parsing first
-            return json.loads(response)
+            return json.loads(clean)
         except json.JSONDecodeError:
             pass
 
         # Try extracting from markdown code block
-        if "```json" in response:
+        for fence in ["```json", "```"]:
+            if fence in clean:
+                try:
+                    start = clean.index(fence) + len(fence)
+                    end = clean.index("```", start)
+                    json_str = clean[start:end].strip()
+                    return json.loads(json_str)
+                except (ValueError, json.JSONDecodeError):
+                    pass
+
+        # Try finding bare JSON object
+        match = _re.search(r'\{.*\}', clean, _re.DOTALL)
+        if match:
             try:
-                start = response.index("```json") + 7
-                end = response.index("```", start)
-                json_str = response[start:end].strip()
-                return json.loads(json_str)
-            except (ValueError, json.JSONDecodeError):
+                return json.loads(match.group())
+            except json.JSONDecodeError:
                 pass
 
         # If all parsing fails, return error
         return {
             "error": "Failed to parse JSON response",
-            "raw_response": response[:200]  # First 200 chars for debugging
+            "raw_response": response[:200]
         }
 
     def get_role_system_prompt(self) -> str:
