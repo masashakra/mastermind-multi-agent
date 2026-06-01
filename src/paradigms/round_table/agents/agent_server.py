@@ -641,9 +641,10 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
                 constraints=constraints
             )
 
-            # Add the guess to result so orchestrator gets it
+            # Add the guess and knowledge base to result so orchestrator gets it
             result["proposed_guess"] = guess
             result["guess"] = guess
+            result["knowledge_base"] = msg.payload.get("knowledge_base", {})
 
             # Check if valid
             is_valid = result.get("valid", False)

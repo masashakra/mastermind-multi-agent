@@ -124,6 +124,28 @@ class RoundTableOrchestrator:
                 guess = msg.payload.get("proposed_guess", msg.payload.get("guess", []))
                 valid = msg.payload.get("valid", False)
 
+                # Merge Analyzer's knowledge base back into orchestrator's KB
+                incoming_kb = msg.payload.get("knowledge_base", {})
+                if incoming_kb:
+                    for color in incoming_kb.get("impossible_colors", []):
+                        if color not in self.knowledge_base["impossible_colors"]:
+                            self.knowledge_base["impossible_colors"].append(color)
+                    for color in incoming_kb.get("confirmed_colors", []):
+                        if color not in self.knowledge_base["confirmed_colors"]:
+                            self.knowledge_base["confirmed_colors"].append(color)
+                    for pos, color in incoming_kb.get("locked_positions", {}).items():
+                        self.knowledge_base["locked_positions"][pos] = color
+                    for color, count in incoming_kb.get("min_color_counts", {}).items():
+                        prev = self.knowledge_base["min_color_counts"].get(color, 0)
+                        if count > prev:
+                            self.knowledge_base["min_color_counts"][color] = count
+                    # Merge constraints (avoid duplicates)
+                    existing = set(self.knowledge_base["constraints"])
+                    for c in incoming_kb.get("constraints", []):
+                        if c not in existing:
+                            self.knowledge_base["constraints"].append(c)
+                            existing.add(c)
+
                 self.last_validation = {
                     "guess": guess,
                     "valid": valid,
