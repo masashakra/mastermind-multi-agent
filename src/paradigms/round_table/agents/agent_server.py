@@ -488,18 +488,20 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             locked     = {int(k): v for k, v in constraints.get("locked_positions", {}).items()}
             min_counts = constraints.get("min_color_counts", {})
             valid      = [c for c in (constraints.get("valid_colors") or available_colors) if c] or available_colors
+            candidates_left = constraints.get("candidates_left", 9999)
 
-            # Normalise case first — LLMs sometimes capitalise colors
+            # Normalise case
             fixed = [c.lower() if isinstance(c, str) else c for c in proposed]
-            # Fix impossible colors
+
+            # Replace impossible colors
             fixed = [c if c not in impossible else _random.choice(valid) for c in fixed]
 
-            # Fix locked positions
+            # Apply locked positions
             for pos, color in locked.items():
                 if pos < len(fixed):
                     fixed[pos] = color
 
-            # Fix min color counts
+            # Satisfy min color counts
             for color, min_n in min_counts.items():
                 if color in impossible:
                     continue
@@ -509,18 +511,28 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 for slot in free[:deficit]:
                     fixed[slot] = color
 
-            # Fix duplicates
-            attempts = 0
-            while fixed in past_guesses and attempts < 50:
-                free = [i for i in range(len(fixed)) if i not in locked]
-                if not free:
-                    break
-                fixed[_random.choice(free)] = _random.choice(valid)
-                attempts += 1
+            # Fix duplicates — if solver has candidates, pick from them
+            if fixed in past_guesses:
+                # Try solver candidates first
+                solver_candidates = constraints.get("candidate_sample", [])
+                for cand in solver_candidates:
+                    if cand not in past_guesses:
+                        fixed = cand
+                        break
+                else:
+                    # Random from valid colors
+                    attempts = 0
+                    while fixed in past_guesses and attempts < 50:
+                        free = [i for i in range(len(fixed)) if i not in locked]
+                        if not free:
+                            break
+                        fixed[_random.choice(free)] = _random.choice(valid)
+                        attempts += 1
 
-            if fixed != proposed:
+            if fixed != [c.lower() if isinstance(c, str) else c for c in proposed]:
                 changes = sum(1 for a, b in zip(proposed, fixed) if a != b)
                 print(f"[Proposer] ✏ Enforced constraints ({changes} slot(s) fixed): {proposed} → {fixed}")
+            print(f"[Proposer] {candidates_left} candidates remaining")
             result["proposed_guess"] = fixed
 
             # Carry game context + constraints forward

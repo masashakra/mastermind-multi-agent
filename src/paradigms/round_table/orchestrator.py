@@ -21,135 +21,159 @@ import uvicorn
 
 
 class ConstraintSolver:
-    """Pure-Python Mastermind constraint engine.
+    """Candidate-elimination Mastermind solver (no LLM involved).
 
-    After every guess+feedback pair this class derives hard mathematical
-    facts — no LLM involved.  The results are passed to the agents so the
-    LLM can focus on generation while code handles deduction.
+    Maintains the full set of codes still consistent with every
+    guess+feedback seen so far.  After each update, hard facts are
+    derived directly from the candidate set:
 
-    Guaranteed deductions (always logically correct):
-    - impossible_colors  : colors that CANNOT appear in the secret
-    - confirmed_colors   : colors that MUST appear in the secret
-    - locked_positions   : {pos: color} exact position matches
-    - min_color_counts   : {color: n} color appears at least n times
-    - valid_colors       : available_colors minus impossible_colors
+    - impossible_colors : colors absent from ALL remaining candidates
+    - confirmed_colors  : colors present in ALL remaining candidates
+    - locked_positions  : positions where every candidate has the same color
+    - min_color_counts  : minimum occurrences of a color across all candidates
+    - candidates        : remaining consistent codes (shrinks each round)
     """
 
     def __init__(self, available_colors: List[str], num_pegs: int):
-        self.available_colors = available_colors
+        from itertools import product as _product
+        self.available_colors = [c.lower() for c in available_colors]
         self.num_pegs = num_pegs
+        # All possible codes to start with
+        self.candidates: List[tuple] = list(_product(self.available_colors, repeat=num_pegs))
         self.impossible_colors: set = set()
         self.confirmed_colors: set = set()
-        self.locked_positions: Dict[int, str] = {}   # {pos: color}
-        self.min_color_counts: Dict[str, int] = {}   # {color: min_count}
+        self.locked_positions: Dict[int, str] = {}
+        self.min_color_counts: Dict[str, int] = {}
+
+    @staticmethod
+    def _score(guess: tuple, secret: tuple) -> tuple:
+        """Return (pegs, positions) for guess vs secret."""
+        from collections import Counter
+        positions = sum(g == s for g, s in zip(guess, secret))
+        gc = Counter(guess)
+        sc = Counter(secret)
+        pegs = sum(min(gc[c], sc[c]) for c in gc)
+        return pegs, positions
 
     def update(self, guess: List[str], feedback: Dict[str, int]) -> None:
-        """Ingest one round's result and update all constraint sets."""
+        """Filter candidates by this round's result, then re-derive constraints."""
+        g = tuple(c.lower() for c in guess)
+        target = (feedback.get("correct_pegs", 0),
+                  feedback.get("correct_positions", 0))
+
+        # Keep only candidates consistent with the feedback
+        self.candidates = [c for c in self.candidates if self._score(g, c) == target]
+
+        # Re-derive all constraints from the surviving candidates
+        self._derive()
+
+    def _derive(self) -> None:
+        """Compute hard facts from the current candidate set."""
         from collections import Counter
-        # Normalise to lowercase — LLMs sometimes capitalise colors
-        guess = [c.lower() for c in guess]
-        pegs = feedback.get("correct_pegs", 0)
-        pos  = feedback.get("correct_positions", 0)
+        if not self.candidates:
+            return
 
-        # ── Rule 1: 0 pegs → every color in this guess is impossible ─────────
-        if pegs == 0:
-            for color in set(guess):
-                self.impossible_colors.add(color)
-                self.confirmed_colors.discard(color)
+        colors = set(self.available_colors)
+        colors_seen = set(c for cand in self.candidates for c in cand)
 
-        # ── Rule 2: pegs == num_pegs → every color in the guess is confirmed ─
-        if pegs == self.num_pegs:
-            for color in guess:
-                if color not in self.impossible_colors:
-                    self.confirmed_colors.add(color)
+        # impossible = colors that appear in no remaining candidate
+        self.impossible_colors = colors - colors_seen
 
-        # ── Rule 3: pos == num_pegs → every position is locked (solved) ──────
-        if pos == self.num_pegs:
-            for i, color in enumerate(guess):
-                self.locked_positions[i] = color
+        # confirmed = colors that appear in every remaining candidate
+        self.confirmed_colors = {
+            c for c in colors
+            if c not in self.impossible_colors
+            and all(c in cand for cand in self.candidates)
+        }
 
-        # ── Rule 4: color appears more times than remaining pegs ─────────────
-        # If color C appears k times in guess and k > pegs, then secret has
-        # at most pegs copies of C — but more usefully: C appears at least
-        # (k - (num_pegs - pegs)) times = k - misses times.
-        # Safe lower bound: secret has ≥ max(0, k - (num_pegs - pegs)) of C.
-        counts = Counter(guess)
-        misses = self.num_pegs - pegs   # colors in guess NOT in secret
-        for color, count in counts.items():
-            if color in self.impossible_colors:
-                continue
-            lower_bound = max(0, count - misses)
-            if lower_bound > 0:
-                prev = self.min_color_counts.get(color, 0)
-                if lower_bound > prev:
-                    self.min_color_counts[color] = lower_bound
-                    self.confirmed_colors.add(color)
+        # locked positions = same color in every candidate at that position
+        self.locked_positions = {}
+        for pos in range(self.num_pegs):
+            at_pos = {cand[pos] for cand in self.candidates}
+            if len(at_pos) == 1:
+                self.locked_positions[pos] = at_pos.pop()
 
-        # ── Rule 5: cross-round position elimination ──────────────────────────
-        # If position i had different colors in two rounds that both got the
-        # same positions count and the count only increased when pos i changed,
-        # we can lock it.  (Simple version: track what the solver already knows.)
-        # This is handled implicitly by Rule 3 when pos==num_pegs.
+        # min_color_counts = minimum occurrences across all candidates
+        self.min_color_counts = {}
+        for color in colors_seen:
+            min_n = min(Counter(cand)[color] for cand in self.candidates)
+            if min_n > 0:
+                self.min_color_counts[color] = min_n
 
     @property
     def valid_colors(self) -> List[str]:
         return [c for c in self.available_colors if c not in self.impossible_colors]
 
-    def enforce(self, guess: List[str], past_guesses: List[List[str]]) -> List[str]:
-        """Fix a proposed guess so it never violates hard constraints.
-
-        1. Replace impossible colors with valid ones.
-        2. Lock confirmed locked positions.
-        3. Ensure min_color_counts are satisfied.
-        4. If the result is a duplicate, randomise the free slots.
-        """
+    def best_guess(self, past_guesses: List[List[str]]) -> List[str]:
+        """Pick a random remaining candidate, avoiding past guesses."""
         import random
+        options = [list(c) for c in self.candidates if list(c) not in past_guesses]
+        if options:
+            return random.choice(options)
+        # Fallback if all candidates already tried (shouldn't happen)
         safe = self.valid_colors or self.available_colors
-        g = list(guess)
+        g = [random.choice(safe) for _ in range(self.num_pegs)]
+        for pos, color in self.locked_positions.items():
+            g[pos] = color
+        return g
 
-        # Step 1 — replace impossible colors
+    def enforce(self, guess: List[str], past_guesses: List[List[str]]) -> List[str]:
+        """Fix a proposed guess to satisfy all hard constraints.
+        If no candidates remain or guess violates constraints badly,
+        return a candidate from the remaining set instead."""
+        import random
+
+        g = [c.lower() if isinstance(c, str) else c for c in guess]
+        safe = self.valid_colors or self.available_colors
+
+        # If the proposed guess is itself a valid candidate, keep it
+        if tuple(g) in self.candidates and g not in past_guesses:
+            return g
+
+        # Replace impossible colors
         g = [c if c not in self.impossible_colors else random.choice(safe) for c in g]
 
-        # Step 2 — lock known positions
+        # Lock confirmed positions
         for pos, color in self.locked_positions.items():
             if pos < len(g):
                 g[pos] = color
 
-        # Step 3 — satisfy min_color_counts
-        for color, min_count in self.min_color_counts.items():
+        # Satisfy min_color_counts
+        for color, min_n in self.min_color_counts.items():
             if color in self.impossible_colors:
                 continue
-            current = g.count(color)
-            deficit = min_count - current
+            deficit = min_n - g.count(color)
             if deficit > 0:
-                # Replace free (non-locked) slots to satisfy the count
-                free_slots = [i for i in range(len(g)) if i not in self.locked_positions and g[i] != color]
-                random.shuffle(free_slots)
-                for slot in free_slots[:deficit]:
+                free = [i for i in range(len(g)) if i not in self.locked_positions]
+                random.shuffle(free)
+                for slot in free[:deficit]:
                     g[slot] = color
 
-        # Step 4 — if still a duplicate, randomise free slots until unique
-        attempts = 0
-        while g in past_guesses and attempts < 50:
-            free = [i for i in range(len(g)) if i not in self.locked_positions]
-            if not free:
-                break
-            g[random.choice(free)] = random.choice(safe)
-            attempts += 1
+        # If still a duplicate, grab a real candidate instead
+        if g in past_guesses:
+            return self.best_guess(past_guesses)
 
         return g
 
     def to_dict(self) -> Dict[str, Any]:
+        import random
+        # Pass a sample of up to 20 candidates so the Proposer can pick from them
+        sample = [list(c) for c in random.sample(
+            self.candidates, min(20, len(self.candidates))
+        )] if self.candidates else []
         return {
-            "impossible_colors": sorted(self.impossible_colors),
-            "confirmed_colors":  sorted(self.confirmed_colors),
-            "locked_positions":  {str(k): v for k, v in self.locked_positions.items()},
-            "min_color_counts":  self.min_color_counts,
-            "valid_colors":      self.valid_colors,
+            "impossible_colors":  sorted(self.impossible_colors),
+            "confirmed_colors":   sorted(self.confirmed_colors),
+            "locked_positions":   {str(k): v for k, v in self.locked_positions.items()},
+            "min_color_counts":   self.min_color_counts,
+            "valid_colors":       self.valid_colors,
+            "candidates_left":    len(self.candidates),
+            "candidate_sample":   sample,
         }
 
     def summary(self) -> str:
-        parts = []
+        n = len(self.candidates)
+        parts = [f"candidates={n}"]
         if self.impossible_colors:
             parts.append(f"impossible={sorted(self.impossible_colors)}")
         if self.confirmed_colors:
@@ -158,7 +182,7 @@ class ConstraintSolver:
             parts.append(f"locked={self.locked_positions}")
         if self.min_color_counts:
             parts.append(f"min_counts={self.min_color_counts}")
-        return "  ".join(parts) if parts else "no constraints yet"
+        return "  ".join(parts)
 
 
 class RoundTableOrchestrator:
