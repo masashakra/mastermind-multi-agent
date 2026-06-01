@@ -68,24 +68,28 @@ class ConstraintSolver:
             for i, color in enumerate(guess):
                 self.locked_positions[i] = color
 
-        # ── Rule 4: minimum color-count lower bound ───────────────────────────
-        # Only safe when a color appears MORE times in the guess than the total
-        # pegs — e.g. color appears 3 times, pegs=2 → color appears ≥2 times.
-        # We CANNOT confirm a color just because count ≤ pegs (too many candidates).
+        # ── Rule 4: color appears more times than remaining pegs ─────────────
+        # If color C appears k times in guess and k > pegs, then secret has
+        # at most pegs copies of C — but more usefully: C appears at least
+        # (k - (num_pegs - pegs)) times = k - misses times.
+        # Safe lower bound: secret has ≥ max(0, k - (num_pegs - pegs)) of C.
         counts = Counter(guess)
+        misses = self.num_pegs - pegs   # colors in guess NOT in secret
         for color, count in counts.items():
             if color in self.impossible_colors:
                 continue
-            # Safe lower bound: if color appears k times and pegs < k,
-            # then secret has at least (pegs) of this color… actually still not
-            # safe unless it's the ONLY color.  The one truly safe rule:
-            # if the guess has only ONE distinct color (all pegs same), confirm it.
-            if len(counts) == 1:
-                # e.g. ['black','black','black','black'] → pegs=2 → black ≥ 2
+            lower_bound = max(0, count - misses)
+            if lower_bound > 0:
                 prev = self.min_color_counts.get(color, 0)
-                if pegs > prev:
-                    self.min_color_counts[color] = pegs
+                if lower_bound > prev:
+                    self.min_color_counts[color] = lower_bound
                     self.confirmed_colors.add(color)
+
+        # ── Rule 5: cross-round position elimination ──────────────────────────
+        # If position i had different colors in two rounds that both got the
+        # same positions count and the count only increased when pos i changed,
+        # we can lock it.  (Simple version: track what the solver already knows.)
+        # This is handled implicitly by Rule 3 when pos==num_pegs.
 
     @property
     def valid_colors(self) -> List[str]:
