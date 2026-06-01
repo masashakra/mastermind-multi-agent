@@ -69,16 +69,22 @@ class ConstraintSolver:
                 self.locked_positions[i] = color
 
         # ── Rule 4: minimum color-count lower bound ───────────────────────────
-        # If color C appears k times in the guess and k ≤ pegs, then the
-        # secret contains C at least k times.
+        # Only safe when a color appears MORE times in the guess than the total
+        # pegs — e.g. color appears 3 times, pegs=2 → color appears ≥2 times.
+        # We CANNOT confirm a color just because count ≤ pegs (too many candidates).
         counts = Counter(guess)
         for color, count in counts.items():
             if color in self.impossible_colors:
                 continue
-            if count <= pegs:
+            # Safe lower bound: if color appears k times and pegs < k,
+            # then secret has at least (pegs) of this color… actually still not
+            # safe unless it's the ONLY color.  The one truly safe rule:
+            # if the guess has only ONE distinct color (all pegs same), confirm it.
+            if len(counts) == 1:
+                # e.g. ['black','black','black','black'] → pegs=2 → black ≥ 2
                 prev = self.min_color_counts.get(color, 0)
-                if count > prev:
-                    self.min_color_counts[color] = count
+                if pegs > prev:
+                    self.min_color_counts[color] = pegs
                     self.confirmed_colors.add(color)
 
     @property
