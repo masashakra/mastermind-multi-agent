@@ -179,6 +179,11 @@ class BaseAgent(ABC):
         # NEW: Agent memory for tracking sent/received messages
         self.memory = AgentMemory(self.agent_id)
 
+        # NEW: Persistent conversation thread (AutoGen-style multi-turn)
+        # Each round's reasoning is added as an assistant message so the
+        # LLM builds on its own prior thinking rather than starting fresh.
+        self.conversation: List[Dict[str, str]] = []
+
     def _initialize_llm(self) -> None:
         """Initialize LLM client based on provider."""
         if self.provider == "kaggle":
@@ -226,6 +231,78 @@ class BaseAgent(ABC):
                 raise ImportError("Install anthropic: pip install anthropic")
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
+
+    def call_llm_conversation(self, system_prompt: str, user_message: str) -> str:
+        """Call LLM with full conversation history (AutoGen-style multi-turn).
+
+        Each call appends to self.conversation so the model sees all its
+        prior reasoning — it builds on its own thoughts across rounds
+        instead of starting from scratch every time.
+
+        Args:
+            system_prompt: Role definition (stays fixed across all rounds)
+            user_message:  Current round's input (just this round's info)
+
+        Returns:
+            LLM response as string
+        """
+        if self.provider != "groq":
+            # Fallback for non-Groq providers: flatten to single prompt
+            history_text = ""
+            for msg in self.conversation[-10:]:
+                role = "You said" if msg["role"] == "assistant" else "Input"
+                history_text += f"\n{role}: {msg['content'][:200]}"
+            full_prompt = f"{system_prompt}\n\nPREVIOUS REASONING:{history_text}\n\nCURRENT INPUT:\n{user_message}"
+            response = self.call_llm(full_prompt)
+        else:
+            # Groq: true multi-turn — pass all prior messages
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(self.conversation[-20:])  # last 20 messages max
+            messages.append({"role": "user", "content": user_message})
+
+            self.call_count += 1
+            keys = self.llm["keys"]
+            total_attempts = len(keys) * 2
+            response = None
+
+            for attempt in range(total_attempts):
+                key_idx = self.llm["key_index"] % len(keys)
+                current_key = keys[key_idx]
+                try:
+                    import requests as _req
+                    resp = _req.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {current_key}"},
+                        json={
+                            "model": self.llm["model"],
+                            "messages": messages,
+                            "max_tokens": 1024,
+                            "temperature": 0.7
+                        },
+                        timeout=60
+                    )
+                    if resp.status_code == 200:
+                        response = resp.json()["choices"][0]["message"]["content"]
+                        break
+                    elif resp.status_code == 429:
+                        self.llm["key_index"] = (key_idx + 1) % len(keys)
+                        print(f"[{self.name}] Groq key {key_idx+1} rate-limited, rotating...")
+                        time.sleep(2)
+                    else:
+                        resp.raise_for_status()
+                except Exception as e:
+                    self.llm["key_index"] = (key_idx + 1) % len(keys)
+                    time.sleep(1)
+                    continue
+
+            if response is None:
+                raise RuntimeError(f"All Groq keys exhausted")
+
+        # Store in conversation thread
+        self.conversation.append({"role": "user",      "content": user_message})
+        self.conversation.append({"role": "assistant",  "content": response})
+
+        return response
 
     def call_llm(self, prompt: str) -> str:
         """Call LLM with prompt and return response.

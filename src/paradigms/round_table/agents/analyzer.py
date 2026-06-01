@@ -60,64 +60,45 @@ class AnalyzerAgent(BaseAgent):
         feedback: Dict[str, int],
         previous_guesses: List[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Analyze all guess history and extract constraints.
+        """Analyze latest feedback using persistent conversation history.
 
-        Args:
-            last_guess: Colors in the most recent guess
-            feedback: {"correct_pegs": int, "correct_positions": int}
-            previous_guesses: Full guess history (all rounds)
-
-        Returns:
-            Constraint analysis dictionary
+        The agent remembers all its prior reasoning via self.conversation —
+        it only needs to see the NEW round's info each time.
         """
         correct_pegs = feedback.get("correct_pegs", 0)
         correct_positions = feedback.get("correct_positions", 0)
+        round_num = len(previous_guesses or []) + 1
 
-        # Format full history — every round, not just recent ones
-        history_text = "No previous guesses yet." if not previous_guesses else "\n".join(
-            f"  Round {i+1}: {g.get('guess')} → pegs={g['feedback'].get('correct_pegs',0)}  pos={g['feedback'].get('correct_positions',0)}"
-            for i, g in enumerate(previous_guesses)
-        )
-
-        role_context = self.get_role_system_prompt()
-
-        prompt = f"""{role_context}
-
-## YOUR TASK — Analyze Mastermind Feedback
-
-You are the Analyzer. Study ALL previous guesses and their feedback, then extract
-every constraint you can to help the team guess the secret code.
-
-ALL GUESSES SO FAR:
-{history_text}
-
-LATEST GUESS: {last_guess}
-LATEST FEEDBACK: {correct_pegs} correct colors (pegs), {correct_positions} correct positions
+        system_prompt = f"""You are the Analyzer agent in a Mastermind game.
+Your role: extract constraints from every guess+feedback pair and accumulate knowledge across rounds.
 
 MASTERMIND RULES:
-- correct_pegs = how many colors from the guess exist in the secret (any position)
-- correct_positions = how many colors are in the exact right position
+- correct_pegs = total colors in the guess that exist in the secret (any position)
+- correct_positions = colors in the EXACT right position
 - If pegs=0 → NONE of those colors are in the secret
-- (pegs - positions) = colors that exist but are in the wrong position
-- Colors can repeat in the secret
+- pegs - positions = colors that exist but are in the WRONG position
+- Colors CAN repeat in the secret
 
-Derive ALL constraints across every round:
-1. Which colors are definitely NOT in the secret? (pegs=0 rounds)
-2. Which colors ARE in the secret? (appeared when pegs>0)
-3. Which positions are locked? (consistent across rounds)
-4. What does each feedback tell us about color counts?
+You have a perfect memory of all your prior analysis above. Build on it — never contradict what you already know."""
+
+        user_message = f"""Round {round_num} result:
+Guess: {last_guess}
+Feedback: {correct_pegs} correct colors (pegs), {correct_positions} correct positions
+
+Based on ALL rounds so far (including your prior analysis), what do we now know?
+What new constraints does this feedback add?
 
 OUTPUT (JSON ONLY):
 {{
-  "analysis": "Summary of what we know so far",
-  "impossible_colors": ["colors definitely not in secret"],
-  "confirmed_colors": ["colors definitely in secret"],
+  "analysis": "What this round tells us + cumulative knowledge",
+  "impossible_colors": ["all colors confirmed absent from secret"],
+  "confirmed_colors": ["all colors confirmed present in secret"],
   "locked_positions": [{{"position": 0, "color": "white"}}],
-  "constraints": ["specific constraint 1", "specific constraint 2"],
-  "confidence": 0.8
+  "constraints": ["every constraint we know so far"],
+  "confidence": 0.9
 }}"""
 
-        response = self.call_llm(prompt)
+        response = self.call_llm_conversation(system_prompt, user_message)
         result = self.parse_json_response(response)
 
         if "error" in result or "analysis" not in result:
@@ -126,7 +107,7 @@ OUTPUT (JSON ONLY):
                 "confirmed_colors": [],
                 "locked_positions": [],
                 "constraints": [],
-                "analysis": "Failed to parse feedback",
+                "analysis": "Parse failed",
                 "confidence": 0.0,
             }
 

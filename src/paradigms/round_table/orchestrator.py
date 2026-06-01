@@ -20,170 +20,6 @@ from paradigms.round_table.agents.agent_server import start_agent_servers
 import uvicorn
 
 
-class ConstraintSolver:
-    """Candidate-elimination Mastermind solver (no LLM involved).
-
-    Maintains the full set of codes still consistent with every
-    guess+feedback seen so far.  After each update, hard facts are
-    derived directly from the candidate set:
-
-    - impossible_colors : colors absent from ALL remaining candidates
-    - confirmed_colors  : colors present in ALL remaining candidates
-    - locked_positions  : positions where every candidate has the same color
-    - min_color_counts  : minimum occurrences of a color across all candidates
-    - candidates        : remaining consistent codes (shrinks each round)
-    """
-
-    def __init__(self, available_colors: List[str], num_pegs: int):
-        from itertools import product as _product
-        self.available_colors = [c.lower() for c in available_colors]
-        self.num_pegs = num_pegs
-        # All possible codes to start with
-        self.candidates: List[tuple] = list(_product(self.available_colors, repeat=num_pegs))
-        self.impossible_colors: set = set()
-        self.confirmed_colors: set = set()
-        self.locked_positions: Dict[int, str] = {}
-        self.min_color_counts: Dict[str, int] = {}
-
-    @staticmethod
-    def _score(guess: tuple, secret: tuple) -> tuple:
-        """Return (pegs, positions) for guess vs secret."""
-        from collections import Counter
-        positions = sum(g == s for g, s in zip(guess, secret))
-        gc = Counter(guess)
-        sc = Counter(secret)
-        pegs = sum(min(gc[c], sc[c]) for c in gc)
-        return pegs, positions
-
-    def update(self, guess: List[str], feedback: Dict[str, int]) -> None:
-        """Filter candidates by this round's result, then re-derive constraints."""
-        g = tuple(c.lower() for c in guess)
-        target = (feedback.get("correct_pegs", 0),
-                  feedback.get("correct_positions", 0))
-
-        # Keep only candidates consistent with the feedback
-        self.candidates = [c for c in self.candidates if self._score(g, c) == target]
-
-        # Re-derive all constraints from the surviving candidates
-        self._derive()
-
-    def _derive(self) -> None:
-        """Compute hard facts from the current candidate set."""
-        from collections import Counter
-        if not self.candidates:
-            return
-
-        colors = set(self.available_colors)
-        colors_seen = set(c for cand in self.candidates for c in cand)
-
-        # impossible = colors that appear in no remaining candidate
-        self.impossible_colors = colors - colors_seen
-
-        # confirmed = colors that appear in every remaining candidate
-        self.confirmed_colors = {
-            c for c in colors
-            if c not in self.impossible_colors
-            and all(c in cand for cand in self.candidates)
-        }
-
-        # locked positions = same color in every candidate at that position
-        self.locked_positions = {}
-        for pos in range(self.num_pegs):
-            at_pos = {cand[pos] for cand in self.candidates}
-            if len(at_pos) == 1:
-                self.locked_positions[pos] = at_pos.pop()
-
-        # min_color_counts = minimum occurrences across all candidates
-        self.min_color_counts = {}
-        for color in colors_seen:
-            min_n = min(Counter(cand)[color] for cand in self.candidates)
-            if min_n > 0:
-                self.min_color_counts[color] = min_n
-
-    @property
-    def valid_colors(self) -> List[str]:
-        return [c for c in self.available_colors if c not in self.impossible_colors]
-
-    def best_guess(self, past_guesses: List[List[str]]) -> List[str]:
-        """Pick a random remaining candidate, avoiding past guesses."""
-        import random
-        options = [list(c) for c in self.candidates if list(c) not in past_guesses]
-        if options:
-            return random.choice(options)
-        # Fallback if all candidates already tried (shouldn't happen)
-        safe = self.valid_colors or self.available_colors
-        g = [random.choice(safe) for _ in range(self.num_pegs)]
-        for pos, color in self.locked_positions.items():
-            g[pos] = color
-        return g
-
-    def enforce(self, guess: List[str], past_guesses: List[List[str]]) -> List[str]:
-        """Fix a proposed guess to satisfy all hard constraints.
-        If no candidates remain or guess violates constraints badly,
-        return a candidate from the remaining set instead."""
-        import random
-
-        g = [c.lower() if isinstance(c, str) else c for c in guess]
-        safe = self.valid_colors or self.available_colors
-
-        # If the proposed guess is itself a valid candidate, keep it
-        if tuple(g) in self.candidates and g not in past_guesses:
-            return g
-
-        # Replace impossible colors
-        g = [c if c not in self.impossible_colors else random.choice(safe) for c in g]
-
-        # Lock confirmed positions
-        for pos, color in self.locked_positions.items():
-            if pos < len(g):
-                g[pos] = color
-
-        # Satisfy min_color_counts
-        for color, min_n in self.min_color_counts.items():
-            if color in self.impossible_colors:
-                continue
-            deficit = min_n - g.count(color)
-            if deficit > 0:
-                free = [i for i in range(len(g)) if i not in self.locked_positions]
-                random.shuffle(free)
-                for slot in free[:deficit]:
-                    g[slot] = color
-
-        # If still a duplicate, grab a real candidate instead
-        if g in past_guesses:
-            return self.best_guess(past_guesses)
-
-        return g
-
-    def to_dict(self) -> Dict[str, Any]:
-        import random
-        # Pass a sample of up to 20 candidates so the Proposer can pick from them
-        sample = [list(c) for c in random.sample(
-            self.candidates, min(20, len(self.candidates))
-        )] if self.candidates else []
-        return {
-            "impossible_colors":  sorted(self.impossible_colors),
-            "confirmed_colors":   sorted(self.confirmed_colors),
-            "locked_positions":   {str(k): v for k, v in self.locked_positions.items()},
-            "min_color_counts":   self.min_color_counts,
-            "valid_colors":       self.valid_colors,
-            "candidates_left":    len(self.candidates),
-            "candidate_sample":   sample,
-        }
-
-    def summary(self) -> str:
-        n = len(self.candidates)
-        parts = [f"candidates={n}"]
-        if self.impossible_colors:
-            parts.append(f"impossible={sorted(self.impossible_colors)}")
-        if self.confirmed_colors:
-            parts.append(f"confirmed={sorted(self.confirmed_colors)}")
-        if self.locked_positions:
-            parts.append(f"locked={self.locked_positions}")
-        if self.min_color_counts:
-            parts.append(f"min_counts={self.min_color_counts}")
-        return "  ".join(parts)
-
 
 class RoundTableOrchestrator:
     """Autonomous Peer-to-Peer Round-Table Paradigm
@@ -221,11 +57,7 @@ class RoundTableOrchestrator:
         self.last_validation: Optional[Dict[str, Any]] = None
         self.validation_received = threading.Event()
 
-        # Constraint solver — updated after every guess, passed to agents
-        self.solver = ConstraintSolver(
-            available_colors=puzzle.get("available_colors", []),
-            num_pegs=puzzle.get("pegs", 4),
-        )
+
 
     async def _start_servers(self) -> None:
         """Start registry, agent servers, and orchestrator server."""
@@ -330,8 +162,7 @@ class RoundTableOrchestrator:
                     "available_colors": self.puzzle.get("available_colors", []),
                     "difficulty":       self.puzzle.get("difficulty", "easy"),
                     "num_pegs":         self.puzzle.get("pegs", 4),
-                    # ── hard constraints from Python solver (never wrong) ──────
-                    "constraints":      self.solver.to_dict(),
+
                 }
             )
 
@@ -441,15 +272,10 @@ class RoundTableOrchestrator:
                     "feedback": feedback,
                 })
 
-                # ── Update constraint solver with hard mathematical facts ─────
-                self.solver.update(guess, feedback)
-
                 pegs = feedback.get("correct_pegs", 0)
                 pos = feedback.get("correct_positions", 0)
                 print(f"[Orchestrator] Round {round_count} → {guess} | "
                       f"pegs={pegs}  pos={pos}" + ("  ✓ SOLVED!" if solved else ""))
-                print(f"[Constraints] {self.solver.summary()}")
-
                 if solved:
                     break
 
