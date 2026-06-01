@@ -468,7 +468,6 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             num_pegs = msg.payload.get("num_pegs", 4)
             guess_history = msg.payload.get("guess_history", [])
 
-            # Do the work — pass knowledge base for constraint-aware guessing
             result = agent.propose_guess(
                 strategy=strategy,
                 constraints_text=constraints_text,
@@ -476,6 +475,20 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 num_pegs=num_pegs,
                 previous_guesses=guess_history,
             )
+
+            # Hard enforcement: if LLM returned a duplicate, override it
+            import random as _random
+            past_guesses = [g.get("guess", g) if isinstance(g, dict) else g for g in guess_history]
+            proposed = result.get("proposed_guess", [])
+            if proposed in past_guesses:
+                print(f"[Proposer] ⚠ Duplicate detected {proposed}, generating new guess...")
+                safe = available_colors or ["red","blue","green","yellow","white","black"]
+                for _ in range(50):
+                    candidate = [_random.choice(safe) for _ in range(num_pegs or 4)]
+                    if candidate not in past_guesses:
+                        result["proposed_guess"] = candidate
+                        result["reasoning"] += " (duplicate overridden)"
+                        break
 
             # Carry game context forward
             game_context = {
