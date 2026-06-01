@@ -494,8 +494,10 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             outgoing_payload = {**result, **game_context}
 
             # Proposer decides autonomously who to send to via LLM
+            # Available peers: validator (normal path) or strategist (if needs strategy revision)
+            # NOT analyzer — Proposer never needs to go back to analysis
             game_state = msg.payload
-            available_peers = ["analyzer", "strategist", "validator"]
+            available_peers = ["strategist", "validator"]
 
             routing = await agent.decide_next_peer(
                 my_work=result,
