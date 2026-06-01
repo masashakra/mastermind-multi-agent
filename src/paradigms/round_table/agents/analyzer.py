@@ -59,118 +59,77 @@ class AnalyzerAgent(BaseAgent):
         last_guess: List[str],
         feedback: Dict[str, int],
         previous_guesses: List[Dict[str, Any]] = None,
-        knowledge_base: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
-        """Analyze feedback and extract NEW constraints, merged with accumulated knowledge.
+        """Analyze all guess history and extract constraints.
 
         Args:
             last_guess: Colors in the most recent guess
             feedback: {"correct_pegs": int, "correct_positions": int}
-            previous_guesses: Full guess history
-            knowledge_base: Accumulated facts from ALL previous rounds
+            previous_guesses: Full guess history (all rounds)
 
         Returns:
-            Constraint analysis dictionary (merged with knowledge_base)
+            Constraint analysis dictionary
         """
         correct_pegs = feedback.get("correct_pegs", 0)
         correct_positions = feedback.get("correct_positions", 0)
-        kb = knowledge_base or {}
 
-        # Format full history (all rounds, not just last 3)
+        # Format full history — every round, not just recent ones
         history_text = "No previous guesses yet." if not previous_guesses else "\n".join(
-            f"  Round {i+1}: {g.get('guess')} → pegs={g['feedback'].get('correct_pegs',0)} pos={g['feedback'].get('correct_positions',0)}"
+            f"  Round {i+1}: {g.get('guess')} → pegs={g['feedback'].get('correct_pegs',0)}  pos={g['feedback'].get('correct_positions',0)}"
             for i, g in enumerate(previous_guesses)
         )
-
-        # Format accumulated knowledge base clearly
-        kb_text = ""
-        if kb:
-            kb_text = f"""
-ACCUMULATED KNOWLEDGE FROM ALL PREVIOUS ROUNDS (DO NOT CONTRADICT THESE):
-  - Colors IMPOSSIBLE (not in secret): {kb.get('impossible_colors', [])}
-  - Colors CONFIRMED (in secret somewhere): {kb.get('confirmed_colors', [])}
-  - Positions LOCKED (exact match confirmed): {kb.get('locked_positions', {})}
-  - Minimum color counts: {kb.get('min_color_counts', {})}
-  - All constraints so far:
-{chr(10).join('    • ' + c for c in kb.get('constraints', [])[-10:])}
-"""
 
         role_context = self.get_role_system_prompt()
 
         prompt = f"""{role_context}
 
-## YOUR TASK — Constraint Extraction (Round {len(previous_guesses or []) + 1})
+## YOUR TASK — Analyze Mastermind Feedback
 
-You are the Analyzer in a Mastermind game. Your job is to extract ALL constraints
-from the guess history and update the knowledge base. Build on what is already known —
-never go backwards.
-{kb_text}
-FULL GUESS HISTORY:
+You are the Analyzer. Study ALL previous guesses and their feedback, then extract
+every constraint you can to help the team guess the secret code.
+
+ALL GUESSES SO FAR:
 {history_text}
 
 LATEST GUESS: {last_guess}
-LATEST FEEDBACK: {correct_pegs} correct colors (pegs), {correct_positions} in correct position
+LATEST FEEDBACK: {correct_pegs} correct colors (pegs), {correct_positions} correct positions
 
-RULES FOR MASTERMIND:
-- "correct_pegs" = total colors in secret that are also in the guess (any position)
-- "correct_positions" = colors that are in the EXACT right position
-- If pegs=0 → NONE of the guessed colors are in the secret at all
-- If pegs=N (all pegs) → ALL guessed colors exist in the secret
-- (pegs - positions) = number of correct colors in WRONG positions
-- If a color appears twice in guess and pegs≥2, it appears at least twice in secret
+MASTERMIND RULES:
+- correct_pegs = how many colors from the guess exist in the secret (any position)
+- correct_positions = how many colors are in the exact right position
+- If pegs=0 → NONE of those colors are in the secret
+- (pegs - positions) = colors that exist but are in the wrong position
+- Colors can repeat in the secret
 
-STEP-BY-STEP ANALYSIS OF LATEST GUESS:
-1. What new colors can we eliminate? (impossible_colors)
-2. What new colors can we confirm? (confirmed_colors)
-3. What positions can we now lock? (locked_positions)
-4. How many times does each color appear? (min_color_counts)
-5. What does this tell us about where colors are NOT? (impossible_positions)
+Derive ALL constraints across every round:
+1. Which colors are definitely NOT in the secret? (pegs=0 rounds)
+2. Which colors ARE in the secret? (appeared when pegs>0)
+3. Which positions are locked? (consistent across rounds)
+4. What does each feedback tell us about color counts?
 
 OUTPUT (JSON ONLY):
 {{
-  "analysis": "One sentence summarising what was learned this round",
-  "new_impossible_colors": ["colors confirmed absent this round"],
-  "new_confirmed_colors": ["colors confirmed present this round"],
-  "new_locked_positions": [{{"position": 0, "color": "red"}}],
-  "new_min_counts": {{"black": 2}},
-  "constraints": [
-    "All known constraints including previous ones",
-    "Be specific: 'black appears ≥2 times', 'white NOT in secret', 'green at position 3 (LOCKED)'"
-  ],
-  "confidence": 0.9
+  "analysis": "Summary of what we know so far",
+  "impossible_colors": ["colors definitely not in secret"],
+  "confirmed_colors": ["colors definitely in secret"],
+  "locked_positions": [{{"position": 0, "color": "white"}}],
+  "constraints": ["specific constraint 1", "specific constraint 2"],
+  "confidence": 0.8
 }}"""
 
         response = self.call_llm(prompt)
         result = self.parse_json_response(response)
 
-        if "error" in result or "constraints" not in result:
+        if "error" in result or "analysis" not in result:
             result = {
-                "new_impossible_colors": [],
-                "new_confirmed_colors": [],
-                "new_locked_positions": [],
-                "new_min_counts": {},
-                "constraints": kb.get("constraints", []),
-                "analysis": "Failed to parse — using existing knowledge",
+                "impossible_colors": [],
+                "confirmed_colors": [],
+                "locked_positions": [],
+                "constraints": [],
+                "analysis": "Failed to parse feedback",
                 "confidence": 0.0,
             }
 
-        # Merge new findings into the knowledge base snapshot passed to next agents
-        merged_kb = dict(kb)
-        for color in result.get("new_impossible_colors", []):
-            if color not in merged_kb.get("impossible_colors", []):
-                merged_kb.setdefault("impossible_colors", []).append(color)
-        for color in result.get("new_confirmed_colors", []):
-            if color not in merged_kb.get("confirmed_colors", []):
-                merged_kb.setdefault("confirmed_colors", []).append(color)
-        for lock in result.get("new_locked_positions", []):
-            merged_kb.setdefault("locked_positions", {})[lock["position"]] = lock["color"]
-        for color, count in result.get("new_min_counts", {}).items():
-            prev = merged_kb.setdefault("min_color_counts", {}).get(color, 0)
-            if count > prev:
-                merged_kb["min_color_counts"][color] = count
-        merged_kb["constraints"] = result.get("constraints", [])
-
-        result["knowledge_base"] = merged_kb
         return result
 
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:

@@ -165,14 +165,12 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
             last_guess = msg.payload.get("last_guess", [])
             feedback = msg.payload.get("feedback", {})
             guess_history = msg.payload.get("guess_history", [])
-            knowledge_base = msg.payload.get("knowledge_base", {})
 
             # Do the work — pass accumulated knowledge base
             result = agent.analyze_feedback(
                 last_guess=last_guess,
                 feedback=feedback,
                 previous_guesses=guess_history,
-                knowledge_base=knowledge_base,
             )
 
             # Carry game context forward so all agents have it
@@ -182,7 +180,6 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 "difficulty":       msg.payload.get("difficulty", "easy"),
                 "num_pegs":         msg.payload.get("num_pegs", 4),
                 # Pass updated knowledge base (merged inside analyze_feedback)
-                "knowledge_base":   result.get("knowledge_base", knowledge_base),
             }
             outgoing_payload = {**result, **game_context}
 
@@ -441,7 +438,6 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             )
 
             # If this is a question, answer it directly without forwarding
-            knowledge_base = msg.payload.get("knowledge_base", {})
 
             if msg.is_question:
                 strategy = msg.payload.get("strategy", "")
@@ -456,7 +452,6 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                     available_colors=available_colors,
                     num_pegs=num_pegs,
                     previous_guesses=guess_history,
-                    knowledge_base=knowledge_base,
                 )
 
                 response_msg = A2AMessage.response(
@@ -480,7 +475,6 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 available_colors=available_colors,
                 num_pegs=num_pegs,
                 previous_guesses=guess_history,
-                knowledge_base=knowledge_base,
             )
 
             # Carry game context forward
@@ -489,7 +483,6 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 "guess_history":    msg.payload.get("guess_history", []),
                 "difficulty":       msg.payload.get("difficulty", "easy"),
                 "num_pegs":         msg.payload.get("num_pegs", 4),
-                "knowledge_base":   knowledge_base,
             }
             outgoing_payload = {**result, **game_context}
 
@@ -646,7 +639,6 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
             # Add the guess and knowledge base to result so orchestrator gets it
             result["proposed_guess"] = guess
             result["guess"] = guess
-            result["knowledge_base"] = msg.payload.get("knowledge_base", {})
 
             # Check if valid
             is_valid = result.get("valid", False)

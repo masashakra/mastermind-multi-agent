@@ -31,91 +31,59 @@ class ProposerAgent(BaseAgent):
         )
 
     def propose_guess(self, strategy: str, constraints_text: str, available_colors: List[str],
-                      num_pegs: int, previous_guesses: List[List[str]],
-                      knowledge_base: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Generate a guess respecting accumulated constraints."""
+                      num_pegs: int, previous_guesses: List[List[str]]) -> Dict[str, Any]:
+        """Generate a guess respecting all feedback so far."""
         import random
         role_context = self.get_role_system_prompt()
 
         colors_str = ", ".join(available_colors)
         prev_guesses_list = [g.get("guess", g) if isinstance(g, dict) else g for g in previous_guesses]
         prev_str = "\n".join(
-            f"  Round {i+1}: {g.get('guess', g)} → pegs={g['feedback'].get('correct_pegs',0)} pos={g['feedback'].get('correct_positions',0)}"
+            f"  Round {i+1}: {g.get('guess', g)} → pegs={g['feedback'].get('correct_pegs',0)}  pos={g['feedback'].get('correct_positions',0)}"
             if isinstance(g, dict) else f"  {g}"
             for i, g in enumerate(previous_guesses)
         ) if previous_guesses else "  None yet"
-
-        # Format knowledge base for prompt
-        kb = knowledge_base or {}
-        kb_text = ""
-        if kb:
-            kb_text = f"""
-ACCUMULATED KNOWLEDGE (HARD FACTS — you MUST respect these):
-  ✗ Colors NOT in secret: {kb.get('impossible_colors', [])}
-  ✓ Colors confirmed IN secret: {kb.get('confirmed_colors', [])}
-  🔒 Locked positions: {kb.get('locked_positions', {})}
-  🔢 Min color counts: {kb.get('min_color_counts', {})}
-  Constraints:
-{chr(10).join('    • ' + c for c in kb.get('constraints', [])[-8:])}
-"""
 
         prompt = f"""{role_context}
 
 ## YOUR TASK — Propose Next Guess
 
-You are playing Mastermind. Generate the BEST next guess to find the secret code.
+You are playing Mastermind. Use ALL previous guesses and feedback to generate the best next guess.
 
 RULES:
 - Exactly {num_pegs} color slots, colors can repeat
 - Use ONLY colors from: {colors_str}
-- DO NOT repeat a previous guess
-- Respect ALL constraints in the knowledge base
-{kb_text}
-STRATEGY: {strategy}
-ADDITIONAL CONSTRAINTS: {constraints_text}
+- DO NOT repeat a previous guess exactly
 
-ALL PREVIOUS GUESSES:
+STRATEGY FROM TEAM: {strategy}
+CONSTRAINTS FROM ANALYZER: {constraints_text}
+
+ALL PREVIOUS GUESSES AND FEEDBACK:
 {prev_str}
 
 THINK STEP BY STEP:
-1. Which colors are impossible? (never guess them)
-2. Which colors MUST appear? (always include confirmed colors)
-3. Which positions are locked? (keep those fixed)
-4. What color count requirements do we have? (e.g. black ≥ 2)
-5. What guess best narrows down the remaining uncertainty?
+1. Which colors are eliminated? (appeared in a round with pegs=0)
+2. Which colors are confirmed? (appeared in rounds with pegs>0)
+3. Which positions look locked? (same color got correct_positions in multiple rounds)
+4. What new guess avoids duplicates and tests new information?
 
 OUTPUT (JSON ONLY):
 {{
   "proposed_guess": ["color1", "color2", "color3", "color4"],
-  "reasoning": "Why this guess based on constraints"
+  "reasoning": "Why this guess based on the history"
 }}"""
 
         response = self.call_llm(prompt)
         result = self.parse_json_response(response)
 
         if "error" in result or "proposed_guess" not in result:
-            # Smart fallback: respect known constraints
-            impossible = kb.get("impossible_colors", [])
-            locked = kb.get("locked_positions", {})
-            safe_colors = [c for c in available_colors if c not in impossible] or available_colors
-
-            fallback_guess = []
-            for i in range(num_pegs):
-                if str(i) in locked or i in locked:
-                    fallback_guess.append(locked.get(str(i), locked.get(i, random.choice(safe_colors))))
-                else:
-                    fallback_guess.append(random.choice(safe_colors))
-
-            # Avoid repeating a previous guess
+            # Random fallback avoiding previous guesses
+            fallback_guess = [random.choice(available_colors) for _ in range(num_pegs)]
             attempts = 0
             while fallback_guess in prev_guesses_list and attempts < 20:
-                fallback_guess = [
-                    locked.get(str(i), locked.get(i, random.choice(safe_colors)))
-                    for i in range(num_pegs)
-                ]
+                fallback_guess = [random.choice(available_colors) for _ in range(num_pegs)]
                 attempts += 1
-
-            result = {"proposed_guess": fallback_guess, "reasoning": "Constraint-aware random fallback"}
+            result = {"proposed_guess": fallback_guess, "reasoning": "Random fallback"}
 
         return result
 
