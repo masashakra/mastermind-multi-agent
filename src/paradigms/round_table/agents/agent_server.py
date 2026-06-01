@@ -173,13 +173,13 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 previous_guesses=guess_history,
             )
 
-            # Carry game context forward so all agents have it
+            # Carry game context + constraints forward
             game_context = {
                 "available_colors": msg.payload.get("available_colors", []),
                 "guess_history":    msg.payload.get("guess_history", []),
                 "difficulty":       msg.payload.get("difficulty", "easy"),
                 "num_pegs":         msg.payload.get("num_pegs", 4),
-                # Pass updated knowledge base (merged inside analyze_feedback)
+                "constraints":      msg.payload.get("constraints", {}),
             }
             outgoing_payload = {**result, **game_context}
 
@@ -319,12 +319,13 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
                 difficulty=difficulty
             )
 
-            # Carry game context forward
+            # Carry game context + constraints forward
             game_context = {
                 "available_colors": msg.payload.get("available_colors", []),
                 "guess_history":    msg.payload.get("guess_history", []),
                 "difficulty":       msg.payload.get("difficulty", "easy"),
                 "num_pegs":         msg.payload.get("num_pegs", 4),
+                "constraints":      msg.payload.get("constraints", {}),
             }
             outgoing_payload = {**result, **game_context}
 
@@ -467,41 +468,71 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             available_colors = msg.payload.get("available_colors", [])
             num_pegs = msg.payload.get("num_pegs", 4)
             guess_history = msg.payload.get("guess_history", [])
+            constraints = msg.payload.get("constraints", {})  # from constraint solver
 
             result = agent.propose_guess(
                 strategy=strategy,
-                constraints_text=constraints_text,
+                constraints_text=str(constraints_text),
                 available_colors=available_colors,
                 num_pegs=num_pegs,
                 previous_guesses=guess_history,
+                constraints=constraints,
             )
 
-            # Hard enforcement: if LLM returned a duplicate, override it
+            # ── Code-level constraint enforcement (regardless of LLM output) ──
             import random as _random
             past_guesses = [g.get("guess", g) if isinstance(g, dict) else g for g in guess_history]
             proposed = result.get("proposed_guess", [])
-            if proposed in past_guesses:
-                print(f"[Proposer] ⚠ Duplicate detected {proposed}, generating new guess...")
-                safe = available_colors or ["red","blue","green","yellow","white","black"]
-                for _ in range(50):
-                    candidate = [_random.choice(safe) for _ in range(num_pegs or 4)]
-                    if candidate not in past_guesses:
-                        result["proposed_guess"] = candidate
-                        result["reasoning"] += " (duplicate overridden)"
-                        break
 
-            # Carry game context forward
+            impossible = set(constraints.get("impossible_colors", []))
+            locked     = {int(k): v for k, v in constraints.get("locked_positions", {}).items()}
+            min_counts = constraints.get("min_color_counts", {})
+            valid      = [c for c in (constraints.get("valid_colors") or available_colors) if c] or available_colors
+
+            # Fix impossible colors
+            fixed = list(proposed)
+            fixed = [c if c not in impossible else _random.choice(valid) for c in fixed]
+
+            # Fix locked positions
+            for pos, color in locked.items():
+                if pos < len(fixed):
+                    fixed[pos] = color
+
+            # Fix min color counts
+            for color, min_n in min_counts.items():
+                if color in impossible:
+                    continue
+                deficit = min_n - fixed.count(color)
+                free = [i for i in range(len(fixed)) if i not in locked and fixed[i] != color]
+                _random.shuffle(free)
+                for slot in free[:deficit]:
+                    fixed[slot] = color
+
+            # Fix duplicates
+            attempts = 0
+            while fixed in past_guesses and attempts < 50:
+                free = [i for i in range(len(fixed)) if i not in locked]
+                if not free:
+                    break
+                fixed[_random.choice(free)] = _random.choice(valid)
+                attempts += 1
+
+            if fixed != proposed:
+                changes = sum(1 for a, b in zip(proposed, fixed) if a != b)
+                print(f"[Proposer] ✏ Enforced constraints ({changes} slot(s) fixed): {proposed} → {fixed}")
+            result["proposed_guess"] = fixed
+
+            # Carry game context + constraints forward
             game_context = {
                 "available_colors": msg.payload.get("available_colors", []),
                 "guess_history":    msg.payload.get("guess_history", []),
                 "difficulty":       msg.payload.get("difficulty", "easy"),
                 "num_pegs":         msg.payload.get("num_pegs", 4),
+                "constraints":      constraints,
             }
             outgoing_payload = {**result, **game_context}
 
             # Proposer decides autonomously who to send to via LLM
-            # Available peers: validator (normal path) or strategist (if needs strategy revision)
-            # NOT analyzer — Proposer never needs to go back to analysis
             game_state = msg.payload
             available_peers = ["strategist", "validator"]
 

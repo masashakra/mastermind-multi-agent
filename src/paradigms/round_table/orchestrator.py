@@ -20,6 +20,135 @@ from paradigms.round_table.agents.agent_server import start_agent_servers
 import uvicorn
 
 
+class ConstraintSolver:
+    """Pure-Python Mastermind constraint engine.
+
+    After every guess+feedback pair this class derives hard mathematical
+    facts — no LLM involved.  The results are passed to the agents so the
+    LLM can focus on generation while code handles deduction.
+
+    Guaranteed deductions (always logically correct):
+    - impossible_colors  : colors that CANNOT appear in the secret
+    - confirmed_colors   : colors that MUST appear in the secret
+    - locked_positions   : {pos: color} exact position matches
+    - min_color_counts   : {color: n} color appears at least n times
+    - valid_colors       : available_colors minus impossible_colors
+    """
+
+    def __init__(self, available_colors: List[str], num_pegs: int):
+        self.available_colors = available_colors
+        self.num_pegs = num_pegs
+        self.impossible_colors: set = set()
+        self.confirmed_colors: set = set()
+        self.locked_positions: Dict[int, str] = {}   # {pos: color}
+        self.min_color_counts: Dict[str, int] = {}   # {color: min_count}
+
+    def update(self, guess: List[str], feedback: Dict[str, int]) -> None:
+        """Ingest one round's result and update all constraint sets."""
+        from collections import Counter
+        pegs = feedback.get("correct_pegs", 0)
+        pos  = feedback.get("correct_positions", 0)
+
+        # ── Rule 1: 0 pegs → every color in this guess is impossible ─────────
+        if pegs == 0:
+            for color in set(guess):
+                self.impossible_colors.add(color)
+                self.confirmed_colors.discard(color)
+
+        # ── Rule 2: pegs == num_pegs → every color in the guess is confirmed ─
+        if pegs == self.num_pegs:
+            for color in guess:
+                if color not in self.impossible_colors:
+                    self.confirmed_colors.add(color)
+
+        # ── Rule 3: pos == num_pegs → every position is locked (solved) ──────
+        if pos == self.num_pegs:
+            for i, color in enumerate(guess):
+                self.locked_positions[i] = color
+
+        # ── Rule 4: minimum color-count lower bound ───────────────────────────
+        # If color C appears k times in the guess and k ≤ pegs, then the
+        # secret contains C at least k times.
+        counts = Counter(guess)
+        for color, count in counts.items():
+            if color in self.impossible_colors:
+                continue
+            if count <= pegs:
+                prev = self.min_color_counts.get(color, 0)
+                if count > prev:
+                    self.min_color_counts[color] = count
+                    self.confirmed_colors.add(color)
+
+    @property
+    def valid_colors(self) -> List[str]:
+        return [c for c in self.available_colors if c not in self.impossible_colors]
+
+    def enforce(self, guess: List[str], past_guesses: List[List[str]]) -> List[str]:
+        """Fix a proposed guess so it never violates hard constraints.
+
+        1. Replace impossible colors with valid ones.
+        2. Lock confirmed locked positions.
+        3. Ensure min_color_counts are satisfied.
+        4. If the result is a duplicate, randomise the free slots.
+        """
+        import random
+        safe = self.valid_colors or self.available_colors
+        g = list(guess)
+
+        # Step 1 — replace impossible colors
+        g = [c if c not in self.impossible_colors else random.choice(safe) for c in g]
+
+        # Step 2 — lock known positions
+        for pos, color in self.locked_positions.items():
+            if pos < len(g):
+                g[pos] = color
+
+        # Step 3 — satisfy min_color_counts
+        for color, min_count in self.min_color_counts.items():
+            if color in self.impossible_colors:
+                continue
+            current = g.count(color)
+            deficit = min_count - current
+            if deficit > 0:
+                # Replace free (non-locked) slots to satisfy the count
+                free_slots = [i for i in range(len(g)) if i not in self.locked_positions and g[i] != color]
+                random.shuffle(free_slots)
+                for slot in free_slots[:deficit]:
+                    g[slot] = color
+
+        # Step 4 — if still a duplicate, randomise free slots until unique
+        attempts = 0
+        while g in past_guesses and attempts < 50:
+            free = [i for i in range(len(g)) if i not in self.locked_positions]
+            if not free:
+                break
+            g[random.choice(free)] = random.choice(safe)
+            attempts += 1
+
+        return g
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "impossible_colors": sorted(self.impossible_colors),
+            "confirmed_colors":  sorted(self.confirmed_colors),
+            "locked_positions":  {str(k): v for k, v in self.locked_positions.items()},
+            "min_color_counts":  self.min_color_counts,
+            "valid_colors":      self.valid_colors,
+        }
+
+    def summary(self) -> str:
+        parts = []
+        if self.impossible_colors:
+            parts.append(f"impossible={sorted(self.impossible_colors)}")
+        if self.confirmed_colors:
+            parts.append(f"confirmed={sorted(self.confirmed_colors)}")
+        if self.locked_positions:
+            parts.append(f"locked={self.locked_positions}")
+        if self.min_color_counts:
+            parts.append(f"min_counts={self.min_color_counts}")
+        return "  ".join(parts) if parts else "no constraints yet"
+
+
 class RoundTableOrchestrator:
     """Autonomous Peer-to-Peer Round-Table Paradigm
 
@@ -55,6 +184,12 @@ class RoundTableOrchestrator:
         # State for receiving validator response
         self.last_validation: Optional[Dict[str, Any]] = None
         self.validation_received = threading.Event()
+
+        # Constraint solver — updated after every guess, passed to agents
+        self.solver = ConstraintSolver(
+            available_colors=puzzle.get("available_colors", []),
+            num_pegs=puzzle.get("pegs", 4),
+        )
 
     async def _start_servers(self) -> None:
         """Start registry, agent servers, and orchestrator server."""
@@ -154,10 +289,12 @@ class RoundTableOrchestrator:
                 payload={
                     "last_guess":       guess_history[-1]["guess"] if guess_history else [],
                     "feedback":         feedback,
-                    "guess_history":    guess_history,   # full history — shared truth
+                    "guess_history":    guess_history,        # full history — shared truth
                     "available_colors": self.puzzle.get("available_colors", []),
                     "difficulty":       self.puzzle.get("difficulty", "easy"),
                     "num_pegs":         self.puzzle.get("pegs", 4),
+                    # ── hard constraints from Python solver (never wrong) ──────
+                    "constraints":      self.solver.to_dict(),
                 }
             )
 
@@ -267,10 +404,14 @@ class RoundTableOrchestrator:
                     "feedback": feedback,
                 })
 
+                # ── Update constraint solver with hard mathematical facts ─────
+                self.solver.update(guess, feedback)
+
                 pegs = feedback.get("correct_pegs", 0)
                 pos = feedback.get("correct_positions", 0)
                 print(f"[Orchestrator] Round {round_count} → {guess} | "
                       f"pegs={pegs}  pos={pos}" + ("  ✓ SOLVED!" if solved else ""))
+                print(f"[Constraints] {self.solver.summary()}")
 
                 if solved:
                     break
