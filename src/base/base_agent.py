@@ -213,6 +213,18 @@ class BaseAgent(ABC):
                 "type": "groq",
                 "model": "qwen/qwen3-32b"  # Reasoning model with <think> tokens
             }
+        elif self.provider == "deepseek":
+            # DeepSeek API — OpenAI-compatible, R1 is a full reasoning model
+            ds_key = os.getenv("DEEPSEEK_API_KEY")
+            if not ds_key:
+                raise ValueError("DEEPSEEK_API_KEY not set. Get one at platform.deepseek.com")
+            self.llm = {
+                "api_key": ds_key,
+                "type": "deepseek",
+                "model": "deepseek-reasoner",   # R1: thinks before answering
+                "base_url": "https://api.deepseek.com",
+            }
+            print(f"[{self.name}] DeepSeek R1 ready")
         elif self.provider == "ollama":
             try:
                 from langchain_ollama import OllamaLLM
@@ -246,8 +258,8 @@ class BaseAgent(ABC):
         Returns:
             LLM response as string
         """
-        if self.provider != "groq":
-            # Fallback for non-Groq providers: flatten to single prompt
+        if self.provider not in ("groq", "deepseek"):
+            # Fallback for non-Groq/DeepSeek providers: flatten to single prompt
             history_text = ""
             for msg in self.conversation[-10:]:
                 role = "You said" if msg["role"] == "assistant" else "Input"
@@ -255,48 +267,79 @@ class BaseAgent(ABC):
             full_prompt = f"{system_prompt}\n\nPREVIOUS REASONING:{history_text}\n\nCURRENT INPUT:\n{user_message}"
             response = self.call_llm(full_prompt)
         else:
-            # Groq: true multi-turn — pass all prior messages
+            # Groq / DeepSeek: true multi-turn — pass all prior messages
             messages = [{"role": "system", "content": system_prompt}]
             messages.extend(self.conversation[-20:])  # last 20 messages max
             messages.append({"role": "user", "content": user_message})
 
             self.call_count += 1
-            keys = self.llm["keys"]
-            total_attempts = len(keys) * 2
+            import requests as _req
             response = None
 
-            for attempt in range(total_attempts):
-                key_idx = self.llm["key_index"] % len(keys)
-                current_key = keys[key_idx]
-                try:
-                    import requests as _req
-                    resp = _req.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {current_key}"},
-                        json={
-                            "model": self.llm["model"],
-                            "messages": messages,
-                            "max_tokens": 1024,
-                            "temperature": 0.7
-                        },
-                        timeout=60
-                    )
-                    if resp.status_code == 200:
-                        response = resp.json()["choices"][0]["message"]["content"]
-                        break
-                    elif resp.status_code == 429:
+            if self.provider == "deepseek":
+                # DeepSeek single key, retry on failure
+                for attempt in range(3):
+                    try:
+                        resp = _req.post(
+                            f"{self.llm['base_url']}/chat/completions",
+                            headers={"Authorization": f"Bearer {self.llm['api_key']}"},
+                            json={
+                                "model": self.llm["model"],
+                                "messages": messages,
+                                "max_tokens": 8000,
+                                "temperature": 0.6,
+                            },
+                            timeout=180,
+                        )
+                        if resp.status_code == 200:
+                            msg = resp.json()["choices"][0]["message"]
+                            response = msg.get("content", "") or msg.get("reasoning_content", "")
+                            break
+                        elif resp.status_code == 429:
+                            wait = 15 * (attempt + 1)
+                            print(f"[{self.name}] DeepSeek rate-limited, waiting {wait}s...")
+                            time.sleep(wait)
+                        else:
+                            resp.raise_for_status()
+                    except Exception as e:
+                        print(f"[{self.name}] DeepSeek error: {e}")
+                        time.sleep(5)
+            else:
+                # Groq: rotate through keys
+                keys = self.llm["keys"]
+                total_attempts = len(keys) * 2
+
+                for attempt in range(total_attempts):
+                    key_idx = self.llm["key_index"] % len(keys)
+                    current_key = keys[key_idx]
+                    try:
+                        resp = _req.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {current_key}"},
+                            json={
+                                "model": self.llm["model"],
+                                "messages": messages,
+                                "max_tokens": 4096,
+                                "temperature": 0.6,
+                            },
+                            timeout=60
+                        )
+                        if resp.status_code == 200:
+                            response = resp.json()["choices"][0]["message"]["content"]
+                            break
+                        elif resp.status_code == 429:
+                            self.llm["key_index"] = (key_idx + 1) % len(keys)
+                            print(f"[{self.name}] Groq key {key_idx+1} rate-limited, rotating...")
+                            time.sleep(2)
+                        else:
+                            resp.raise_for_status()
+                    except Exception as e:
                         self.llm["key_index"] = (key_idx + 1) % len(keys)
-                        print(f"[{self.name}] Groq key {key_idx+1} rate-limited, rotating...")
-                        time.sleep(2)
-                    else:
-                        resp.raise_for_status()
-                except Exception as e:
-                    self.llm["key_index"] = (key_idx + 1) % len(keys)
-                    time.sleep(1)
-                    continue
+                        time.sleep(1)
+                        continue
 
             if response is None:
-                raise RuntimeError(f"All Groq keys exhausted")
+                raise RuntimeError(f"LLM call failed after all attempts")
 
         # Store in conversation thread
         self.conversation.append({"role": "user",      "content": user_message})
@@ -385,6 +428,37 @@ class BaseAgent(ABC):
                         time.sleep(2)
                         continue
                 raise RuntimeError(f"All {len(keys)} Groq keys exhausted after {total_attempts} attempts")
+            elif self.provider == "deepseek":
+                # DeepSeek API — OpenAI-compatible, R1 reasons via reasoning_content
+                for attempt in range(3):
+                    try:
+                        resp = requests.post(
+                            f"{self.llm['base_url']}/chat/completions",
+                            headers={"Authorization": f"Bearer {self.llm['api_key']}"},
+                            json={
+                                "model": self.llm["model"],
+                                "messages": [{"role": "user", "content": prompt}],
+                                "max_tokens": 4096,
+                                "temperature": 0.6,
+                            },
+                            timeout=120,
+                        )
+                        if resp.status_code == 200:
+                            msg = resp.json()["choices"][0]["message"]
+                            # R1 returns reasoning in reasoning_content, answer in content
+                            response = msg.get("content", "") or msg.get("reasoning_content", "")
+                            break
+                        elif resp.status_code == 429:
+                            wait = 10 * (attempt + 1)
+                            print(f"[{self.name}] DeepSeek rate-limited, waiting {wait}s...")
+                            time.sleep(wait)
+                        else:
+                            resp.raise_for_status()
+                    except requests.exceptions.Timeout:
+                        print(f"[{self.name}] DeepSeek timeout (attempt {attempt+1}/3)")
+                        time.sleep(5)
+                else:
+                    raise RuntimeError("DeepSeek API failed after 3 attempts")
             elif self.provider == "ollama":
                 # OllamaLLM uses invoke() method
                 response = self.llm.invoke(prompt)
