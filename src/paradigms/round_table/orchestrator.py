@@ -50,7 +50,7 @@ class RoundTableOrchestrator:
 
         # Initialize message logger
         puzzle_id = puzzle.get("puzzle_id", "unknown")
-        log_file = f"logs/{puzzle_id}_{provider}_messages.log"
+        log_file = f"logs/{puzzle_id}_round_table_{provider}_messages.log"
         from communication.message_logger import init_message_logger
         self.message_logger = init_message_logger(log_file)
 

@@ -1,11 +1,10 @@
-# Boss-Worker Paradigm Module
+# Round-Table Paradigm Module
 
 from paradigms.round_table.agents import (
     AnalyzerAgent,
     StrategistAgent,
     ProposerAgent,
     ValidatorAgent,
-    LoggerAgent,
     MetricsAgent,
 )
 
@@ -14,6 +13,5 @@ __all__ = [
     "StrategistAgent",
     "ProposerAgent",
     "ValidatorAgent",
-    "LoggerAgent",
     "MetricsAgent",
 ]
