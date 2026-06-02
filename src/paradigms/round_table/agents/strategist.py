@@ -30,30 +30,53 @@ class StrategistAgent(BaseAgent):
             registry_url=registry_url,
         )
 
-    def propose_strategy(self, guess_history: List[Dict], difficulty: str) -> Dict[str, Any]:
-        """Propose strategy based on game state."""
-        role_context = self.get_role_system_prompt()
+    def propose_strategy(
+        self,
+        guess_history: List[Dict],
+        difficulty: str,
+        analysis: str = "",
+        impossible_colors: List[str] = None,
+        locked_positions: List[Dict] = None
+    ) -> Dict[str, Any]:
+        """Propose strategy based on game state AND constraint analysis from Analyzer."""
+        round_num = len(guess_history) + 1
 
-        history_summary = f"Round {len(guess_history) + 1}"
-        if guess_history:
-            history_summary += f": {len(guess_history)} guesses made"
+        # Build constraint context
+        constraint_context = ""
+        if impossible_colors:
+            constraint_context += f"\nImpossible colors: {impossible_colors}"
+        if locked_positions:
+            constraint_context += f"\nLocked positions: {locked_positions}"
+        if analysis:
+            constraint_context += f"\n\nAnalyzer's constraint analysis:\n{analysis}"
 
-        prompt = f"""{role_context}
-
-## YOUR TASK
-Propose high-level strategy for the next guess in Boss-Worker paradigm.
+        prompt = f"""You are the Strategist in a Mastermind game.
+Your role: Based on constraint analysis, recommend the best strategy for the next guess.
 
 DIFFICULTY: {difficulty}
-{history_summary}
+ROUND: {round_num}
+GUESSES SO FAR: {len(guess_history)}
 
-Analyze the situation and propose a strategy (EXPLORATION, CONSTRAINT_BUILDING, REFINEMENT, or CONFIRMATION).
+CURRENT CONSTRAINTS:
+{constraint_context if constraint_context else "No constraints yet (first round)"}
+
+STRATEGY PHASES:
+- EXPLORATION: Test untested colors to discover what's in the secret
+- CONSTRAINT_BUILDING: Use feedback to narrow down which colors exist
+- REFINEMENT: Test positions for colors we know exist
+- CONFIRMATION: Lock down the final positions
+
+Given the constraints above, what's the optimal next strategy?
+- Which phase are we in?
+- What should the Proposer focus on testing?
+- Why is this the best approach now?
 
 OUTPUT (JSON ONLY):
 {{
   "phase": "EXPLORATION|CONSTRAINT_BUILDING|REFINEMENT|CONFIRMATION",
-  "strategy": "[Brief strategy description]",
-  "confidence": 0.8,
-  "reasoning": "[Why this phase]"
+  "strategy": "Specific guidance for next guess: test these color positions, avoid these colors, etc.",
+  "confidence": 0.85,
+  "reasoning": "Why this phase is optimal given current constraints"
 }}"""
 
         response = self.call_llm(prompt)

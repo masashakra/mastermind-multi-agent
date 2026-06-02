@@ -323,11 +323,17 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
 
             guess_history = msg.payload.get("guess_history", [])
             difficulty = msg.payload.get("difficulty", "medium")
+            analysis = msg.payload.get("analysis", "")  # Constraint analysis from Analyzer
+            impossible_colors = msg.payload.get("impossible_colors", [])
+            locked_positions = msg.payload.get("locked_positions", [])
 
-            # Do the work
+            # Do the work — NOW Strategist has constraint data!
             result = agent.propose_strategy(
                 guess_history=guess_history,
-                difficulty=difficulty
+                difficulty=difficulty,
+                analysis=analysis,
+                impossible_colors=impossible_colors,
+                locked_positions=locked_positions
             )
 
             # Carry game context + constraints forward
