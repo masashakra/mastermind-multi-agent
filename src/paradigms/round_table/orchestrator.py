@@ -238,7 +238,7 @@ class RoundTableOrchestrator:
                 # Wait for Validator to send back the final guess
                 # Timeout after 60 seconds
                 received = await asyncio.to_thread(
-                    self.validation_received.wait, 60
+                    self.validation_received.wait, 300  # 5 min — reasoning models are slow
                 )
 
                 if not received:

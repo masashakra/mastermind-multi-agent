@@ -174,7 +174,7 @@ class BaseAgent(ABC):
 
         # NEW: For round-table peer messaging (autonomous A2A communication)
         self.registry_url = registry_url
-        self.http_client = httpx.AsyncClient(timeout=120.0)
+        self.http_client = httpx.AsyncClient(timeout=300.0)  # 5 min — o3-mini can take ~60s
 
         # NEW: Agent memory for tracking sent/received messages
         self.memory = AgentMemory(self.agent_id)
@@ -805,7 +805,7 @@ class BaseAgent(ABC):
                 resp = await self.http_client.post(
                     f"{peer_url}/{action}",
                     json=request_msg.to_dict(),
-                    timeout=30.0,
+                    timeout=300.0,  # 5 min — reasoning models take time
                 )
 
                 # Parse response
