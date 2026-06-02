@@ -209,13 +209,25 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
 
             print(f"[Analyzer] Decision: send to {next_peer} via /{action}")
 
+            # Log routing decision
+            from communication.message_logger import get_message_logger
+            logger = get_message_logger()
+            logger.log_routing_decision(
+                agent_name="Analyzer_RoundTable",
+                decision="Autonomous routing",
+                next_peer=next_peer,
+                action=action,
+                reasoning=routing.get("reasoning", ""),
+            )
+
             # Autonomously send to next peer (fire-and-forget, non-blocking)
             async def send_peer_message():
                 try:
                     await agent.send_a2a_message(
                         receiver_type=next_peer,
                         action=action,
-                        payload=outgoing_payload
+                        payload=outgoing_payload,
+                        routing_decision=f"send to {next_peer}",
                     )
                 except Exception as e:
                     print(f"[Analyzer] Error sending to {next_peer}: {e}")

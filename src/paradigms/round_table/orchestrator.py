@@ -48,6 +48,12 @@ class RoundTableOrchestrator:
         self.game_engine = GameEngine(puzzle["secret_code"], puzzle["difficulty"])
         self.start_time = time.time()
 
+        # Initialize message logger
+        puzzle_id = puzzle.get("puzzle_id", "unknown")
+        log_file = f"logs/{puzzle_id}_{provider}_messages.log"
+        from communication.message_logger import init_message_logger
+        self.message_logger = init_message_logger(log_file)
+
         # Server URLs (will be set during startup)
         self.registry_url: Optional[str] = None
         self.agent_urls: Optional[Dict[str, str]] = None

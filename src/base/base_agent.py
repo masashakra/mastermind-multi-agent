@@ -396,6 +396,23 @@ class BaseAgent(ABC):
         self.conversation.append({"role": "user",      "content": user_message})
         self.conversation.append({"role": "assistant",  "content": response})
 
+        # Log conversation turns
+        from communication.message_logger import get_message_logger
+        logger = get_message_logger()
+        turn = len(self.conversation) // 2
+        logger.log_conversation(
+            agent_name=self.name,
+            turn=turn,
+            role="user",
+            content=user_message[:500],  # Truncate for file size
+        )
+        logger.log_conversation(
+            agent_name=self.name,
+            turn=turn,
+            role="assistant",
+            content=response[:500],
+        )
+
         return response
 
     def call_llm(self, prompt: str) -> str:
@@ -782,6 +799,7 @@ class BaseAgent(ABC):
         payload: Dict[str, Any],
         is_question: bool = False,
         retries: int = 2,
+        routing_decision: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send A2A message to peer agent.
 
@@ -828,6 +846,19 @@ class BaseAgent(ABC):
                 import os
                 if os.getenv("VERBOSE_A2A"):
                     print(f"  ├─ Payload: {json.dumps(payload, indent=2)[:500]}...")
+
+                # Log to message logger
+                from communication.message_logger import get_message_logger
+                logger = get_message_logger()
+                logger.log_a2a_send(
+                    agent_name=self.name,
+                    message_id=request_msg.message_id,
+                    sender_id=request_msg.sender_id,
+                    receiver_id=request_msg.receiver_id,
+                    action=action,
+                    payload=payload,
+                    routing_decision=routing_decision,
+                )
 
                 # Send HTTP POST with A2A envelope
                 resp = await self.http_client.post(
