@@ -1,7 +1,14 @@
 """
-Message Logger — Comprehensive logging of all A2A messages and agent conversations.
+Message Logger — Universal logging system for all paradigms.
 
-Logs all inter-agent communication to JSON file for analysis and debugging.
+Comprehensive logging of all A2A messages and agent conversations across:
+- round_table (peer-to-peer autonomous agents)
+- boss_worker (hierarchical orchestration)
+- direct_debate, judge_mediated, moderator_mediated (debate paradigms)
+- direct_adversarial (adversarial setup)
+
+All logs written to JSON for analysis and debugging.
+Each paradigm gets its own log file: logs/{puzzle_id}_{paradigm}_{provider}_messages.log
 """
 
 import json
