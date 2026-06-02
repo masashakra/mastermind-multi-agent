@@ -43,15 +43,38 @@ class ProposerAgent(BaseAgent):
         round_num = len(previous_guesses) + 1
 
         system_prompt = f"""You are the Proposer agent in a Mastermind game.
-Your role: propose the best next guess based on all feedback so far.
+Your role: propose the BEST next guess by systematically using constraint information.
 
 RULES:
-- Secret code has exactly {num_pegs} color slots, colors can repeat
+- Secret code: exactly {num_pegs} color slots, colors CAN repeat
 - Available colors: {', '.join(available_colors)}
-- NEVER repeat a previous guess exactly
-- Use ALL feedback and your prior reasoning to make the best next guess
+- NEVER repeat any previous guess
+- Every color that appears must be justified by constraints
 
-You remember all your previous guesses and the reasoning behind them above."""
+GUESS GENERATION STEPS:
+1. REVIEW CONSTRAINTS: What do we know?
+   - Which positions are LOCKED (confirmed color at position)?
+   - Which colors are IMPOSSIBLE (definitely not in secret)?
+   - Which colors are CONFIRMED but MISPLACED (exist but wrong position)?
+
+2. BUILD CANDIDATE COLORS: For each position, which colors are possible?
+   - Position 0: {colors that don't violate constraints}
+   - Position 1: {colors that don't violate constraints}
+   - etc.
+
+3. APPLY STRATEGY: Based on strategy (exploration/refinement), pick colors:
+   - EXPLORATION: Test untested colors
+   - REFINEMENT: Test positions for confirmed-but-misplaced colors
+   - CONFIRMATION: Lock down final positions
+
+4. VALIDATE GUESS: Does this guess violate ANY constraints?
+   - Check locked positions match exactly
+   - Check no impossible colors are used
+   - Check misplaced colors appear in different positions
+
+5. FINALIZE: Commit to the guess
+
+You remember all previous guesses and reasoning via conversation history."""
 
         # Format previous guesses for this round's context
         prev_str = "\n".join(
@@ -60,21 +83,34 @@ You remember all your previous guesses and the reasoning behind them above."""
             for i, g in enumerate(previous_guesses)
         ) if previous_guesses else "  No guesses yet — this is round 1"
 
-        user_message = f"""Round {round_num} — propose your next guess.
+        user_message = f"""Round {round_num} — propose your next guess using systematic constraint reasoning.
 
-Strategy from team: {strategy}
-Analysis from Analyzer: {constraints_text}
+CONSTRAINT ANALYSIS (from Analyzer):
+{constraints_text}
 
-All guesses so far:
+STRATEGY GUIDANCE (from Strategist):
+{strategy}
+
+PRIOR GUESSES AND FEEDBACK:
 {prev_str}
 
-Based on your memory of prior rounds and this analysis, what is the BEST next guess?
-Think step by step about what the feedback tells you, then commit to a guess.
+Now apply the 5-step process:
+1. Review constraints from the analysis above
+2. Build candidate colors for each position
+3. Apply strategy (exploration vs refinement)
+4. Validate the guess respects all constraints
+5. Propose the guess
 
 OUTPUT (JSON ONLY):
 {{
   "proposed_guess": ["color1", "color2", "color3", "color4"],
-  "reasoning": "Step by step: what I know, what I'm testing"
+  "constraint_check": {{
+    "locked_positions_respected": true,
+    "no_impossible_colors": true,
+    "misplaced_colors_repositioned": true,
+    "no_repeated_guess": true
+  }},
+  "reasoning": "Step-by-step reasoning through constraints: position 0 must be X because Y, position 1 must be Z because..."
 }}"""
 
         response = self.call_llm_conversation(system_prompt, user_message)

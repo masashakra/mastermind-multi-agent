@@ -70,32 +70,58 @@ class AnalyzerAgent(BaseAgent):
         round_num = len(previous_guesses or []) + 1
 
         system_prompt = f"""You are the Analyzer agent in a Mastermind game.
-Your role: extract constraints from every guess+feedback pair and accumulate knowledge across rounds.
+Your role: extract constraints from every guess+feedback pair using EXPLICIT step-by-step reasoning.
 
 MASTERMIND RULES:
-- correct_pegs = total colors in the guess that exist in the secret (any position)
+- correct_pegs = total colors in guess that exist in secret (any position)
 - correct_positions = colors in the EXACT right position
-- If pegs=0 → NONE of those colors are in the secret
-- pegs - positions = colors that exist but are in the WRONG position
+- If pegs=0 → NONE of those colors are in the secret (all impossible)
+- misplaced = pegs - positions = colors that exist but in WRONG position
 - Colors CAN repeat in the secret
 
-You have a perfect memory of all your prior analysis above. Build on it — never contradict what you already know."""
+ANALYSIS STEPS (follow exactly):
+1. IDENTIFY EXISTING COLORS: Which colors from this guess exist in secret?
+   → If pegs > 0, at least that many unique colors are in secret
+
+2. IDENTIFY LOCKED POSITIONS: Which guess colors match the exact position?
+   → These are confirmed at specific positions
+
+3. IDENTIFY MISPLACED COLORS: Which colors are in secret but wrong position?
+   → misplaced = correct_pegs - correct_positions
+   → These colors exist but NOT in their guessed positions
+
+4. IDENTIFY IMPOSSIBLE COLORS: Which colors are definitely NOT in secret?
+   → Any color with pegs=0 in any guess where it appeared
+
+5. IDENTIFY UNKNOWNS: What's left to discover?
+   → How many more colors do we need to find?
+   → Which positions are still open?
+
+You have a perfect memory of all prior analysis above. Build on it — never contradict previous rounds."""
 
         user_message = f"""Round {round_num} result:
 Guess: {last_guess}
 Feedback: {correct_pegs} correct colors (pegs), {correct_positions} correct positions
+Misplaced: {correct_pegs - correct_positions} colors in secret but wrong position
 
-Based on ALL rounds so far (including your prior analysis), what do we now know?
-What new constraints does this feedback add?
+Apply analysis steps 1-5 from above for this round ONLY. Then combine with ALL prior analysis.
 
 OUTPUT (JSON ONLY):
 {{
-  "analysis": "What this round tells us + cumulative knowledge",
-  "impossible_colors": ["all colors confirmed absent from secret"],
-  "confirmed_colors": ["all colors confirmed present in secret"],
-  "locked_positions": [{{"position": 0, "color": "white"}}],
-  "constraints": ["every constraint we know so far"],
-  "confidence": 0.9
+  "reasoning_steps": [
+    "Step 1: IDENTIFY EXISTING COLORS - ...",
+    "Step 2: IDENTIFY LOCKED POSITIONS - ...",
+    "Step 3: IDENTIFY MISPLACED COLORS - ...",
+    "Step 4: IDENTIFY IMPOSSIBLE COLORS - ...",
+    "Step 5: IDENTIFY UNKNOWNS - ..."
+  ],
+  "analysis": "Summary of what we know now from all rounds combined",
+  "impossible_colors": ["all colors confirmed absent"],
+  "confirmed_colors": ["all colors confirmed present"],
+  "locked_positions": [{{"position": 0, "color": "white", "rounds_confirmed": 1}}],
+  "misplaced_colors": [{{"color": "red", "wrong_positions": [2, 3]}}],
+  "constraints": ["explicit constraints for strategy"],
+  "confidence": 0.85
 }}"""
 
         response = self.call_llm_conversation(system_prompt, user_message)
