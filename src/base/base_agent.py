@@ -240,6 +240,18 @@ class BaseAgent(ABC):
                     "  Free option: sign up at openrouter.ai → set OPENROUTER_API_KEY\n"
                     "  Paid option: platform.deepseek.com → set DEEPSEEK_API_KEY"
                 )
+        elif self.provider == "openai":
+            # OpenAI — o3-mini is #1 for Mastermind (MastermindEval 2025: ~100% solve rate)
+            oai_key = os.getenv("OPENAI_API_KEY")
+            if not oai_key:
+                raise ValueError("OPENAI_API_KEY not set")
+            self.llm = {
+                "api_key": oai_key,
+                "type": "openai",
+                "model": "o3-mini",
+                "base_url": "https://api.openai.com/v1",
+            }
+            print(f"[{self.name}] OpenAI o3-mini ready")
         elif self.provider == "ollama":
             try:
                 from langchain_ollama import OllamaLLM
@@ -273,8 +285,8 @@ class BaseAgent(ABC):
         Returns:
             LLM response as string
         """
-        if self.provider not in ("groq", "deepseek"):
-            # Fallback for non-Groq/DeepSeek providers: flatten to single prompt
+        if self.provider not in ("groq", "deepseek", "openai"):
+            # Fallback for other providers: flatten to single prompt
             history_text = ""
             for msg in self.conversation[-10:]:
                 role = "You said" if msg["role"] == "assistant" else "Input"
@@ -291,7 +303,31 @@ class BaseAgent(ABC):
             import requests as _req
             response = None
 
-            if self.provider == "deepseek":
+            if self.provider == "openai":
+                import requests as _req
+                for attempt in range(3):
+                    try:
+                        resp = _req.post(
+                            f"{self.llm['base_url']}/chat/completions",
+                            headers={"Authorization": f"Bearer {self.llm['api_key']}"},
+                            json={
+                                "model": self.llm["model"],
+                                "messages": messages,
+                                "reasoning_effort": "medium",
+                            },
+                            timeout=120,
+                        )
+                        if resp.status_code == 200:
+                            response = resp.json()["choices"][0]["message"]["content"]
+                            break
+                        elif resp.status_code == 429:
+                            time.sleep(15 * (attempt + 1))
+                        else:
+                            resp.raise_for_status()
+                    except Exception as e:
+                        print(f"[{self.name}] OpenAI error: {e}")
+                        time.sleep(5)
+            elif self.provider == "deepseek":
                 # DeepSeek single key, retry on failure
                 for attempt in range(3):
                     try:
@@ -474,6 +510,31 @@ class BaseAgent(ABC):
                         time.sleep(5)
                 else:
                     raise RuntimeError("DeepSeek API failed after 3 attempts")
+            elif self.provider == "openai":
+                import requests as _req
+                for attempt in range(3):
+                    try:
+                        resp = _req.post(
+                            f"{self.llm['base_url']}/chat/completions",
+                            headers={"Authorization": f"Bearer {self.llm['api_key']}"},
+                            json={
+                                "model": self.llm["model"],
+                                "messages": [{"role": "user", "content": prompt}],
+                                "reasoning_effort": "medium",  # low/medium/high
+                            },
+                            timeout=120,
+                        )
+                        if resp.status_code == 200:
+                            response = resp.json()["choices"][0]["message"]["content"]
+                            break
+                        elif resp.status_code == 429:
+                            time.sleep(15 * (attempt + 1))
+                        else:
+                            resp.raise_for_status()
+                    except requests.exceptions.Timeout:
+                        time.sleep(5)
+                else:
+                    raise RuntimeError("OpenAI API failed after 3 attempts")
             elif self.provider == "ollama":
                 # OllamaLLM uses invoke() method
                 response = self.llm.invoke(prompt)
