@@ -58,8 +58,8 @@ GUESS GENERATION STEPS:
    - Which colors are CONFIRMED but MISPLACED (exist but wrong position)?
 
 2. BUILD CANDIDATE COLORS: For each position, which colors are possible?
-   - Position 0: {colors that don't violate constraints}
-   - Position 1: {colors that don't violate constraints}
+   - Position 0: {{colors that don't violate constraints}}
+   - Position 1: {{colors that don't violate constraints}}
    - etc.
 
 3. APPLY STRATEGY: Based on strategy (exploration/refinement), pick colors:
