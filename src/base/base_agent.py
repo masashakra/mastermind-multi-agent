@@ -313,7 +313,7 @@ class BaseAgent(ABC):
                             json={
                                 "model": self.llm["model"],
                                 "messages": messages,
-                                "reasoning_effort": "medium",
+                                "reasoning_effort": "low",  # low=fast, medium=balanced, high=thorough
                             },
                             timeout=120,
                         )
@@ -520,7 +520,7 @@ class BaseAgent(ABC):
                             json={
                                 "model": self.llm["model"],
                                 "messages": [{"role": "user", "content": prompt}],
-                                "reasoning_effort": "medium",  # low/medium/high
+                                "reasoning_effort": "low",  # low=fast, medium=balanced, high=thorough
                             },
                             timeout=120,
                         )
