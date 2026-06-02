@@ -553,6 +553,29 @@ class BaseAgent(ABC):
         except Exception as e:
             raise RuntimeError(f"LLM call failed for {self.name}: {str(e)}")
 
+    def dump_conversation(self, max_turns: int = 20) -> str:
+        """Return conversation history as formatted text for debugging.
+
+        Args:
+            max_turns: Max number of recent messages to include
+
+        Returns:
+            Formatted conversation string
+        """
+        if not self.conversation:
+            return f"[{self.name}] No conversation history"
+
+        recent = self.conversation[-max_turns:]
+        output = f"\n{'='*70}\n[{self.name}] CONVERSATION HISTORY\n{'='*70}\n"
+        for i, msg in enumerate(recent, 1):
+            role = msg["role"].upper()
+            content = msg["content"]
+            if len(content) > 300:
+                content = content[:300] + "...[truncated]"
+            output += f"\n{i}. [{role}]\n{content}\n"
+        output += f"\n{'='*70}\n"
+        return output
+
     def parse_json_response(self, response: str) -> Dict[str, Any]:
         """Parse JSON from LLM response.
 
@@ -800,6 +823,11 @@ class BaseAgent(ABC):
                     f"[{self.name}{msg_type}A2A] POST {peer_url}/{action} "
                     f"(msg_id={msg_id}, attempt {attempt+1})"
                 )
+
+                # VERBOSE: Print message content if VERBOSE_A2A env var is set
+                import os
+                if os.getenv("VERBOSE_A2A"):
+                    print(f"  ├─ Payload: {json.dumps(payload, indent=2)[:500]}...")
 
                 # Send HTTP POST with A2A envelope
                 resp = await self.http_client.post(
