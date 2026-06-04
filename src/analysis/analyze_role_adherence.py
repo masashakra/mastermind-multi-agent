@@ -62,7 +62,7 @@ class RoleAdherenceAnalyzer:
 
     def analyze_and_save(
         self, output_file: str = None
-    ) -> str:
+    ) -> Dict:
         """
         Analyze and save results to file.
 
@@ -70,7 +70,7 @@ class RoleAdherenceAnalyzer:
             output_file: Optional output file path. Defaults to ./role_adherence_report.json
 
         Returns:
-            Path to saved report
+            Dictionary with results
         """
         if output_file is None:
             output_file = Path(self.log_file).parent / "role_adherence_report.json"
@@ -81,9 +81,22 @@ class RoleAdherenceAnalyzer:
 
         # Prepare data for JSON serialization
         json_results = {
-            "evaluation_results": results["evaluation_results"],
+            "evaluation_results": {
+                "overall_adherence_pct": results["evaluation_results"]["overall_adherence_pct"],
+                "total_messages": results["evaluation_results"]["total_messages"],
+                "results_by_agent": {}
+            },
             "analysis_summary": results["summary"],
         }
+
+        # Process agent results
+        for agent_name, agent_data in results["evaluation_results"]["results_by_agent"].items():
+            json_results["evaluation_results"]["results_by_agent"][agent_name] = {
+                "role_adherence_pct": agent_data["role_adherence_pct"],
+                "total_messages": agent_data["total_messages"],
+                "role_specific_count": agent_data["role_specific_count"],
+                "avg_confidence": float(agent_data["avg_confidence"]),
+            }
 
         # Add detailed message analysis
         detailed_messages = {}
@@ -103,7 +116,7 @@ class RoleAdherenceAnalyzer:
             json.dump(json_results, f, indent=2)
 
         print(f"✅ Report saved: {output_file}")
-        return str(output_file)
+        return results
 
 
 def main():
