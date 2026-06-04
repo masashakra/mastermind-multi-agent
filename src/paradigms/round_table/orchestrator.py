@@ -152,7 +152,7 @@ class RoundTableOrchestrator:
 
         This triggers the peer-to-peer chain reaction.
         """
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:  # Increased for DeepSeek reasoning
             analyzer_url = self.agent_urls.get("analyzer")
             if not analyzer_url:
                 raise RuntimeError("Analyzer not found in agent URLs")
@@ -179,7 +179,7 @@ class RoundTableOrchestrator:
                     resp = await client.post(
                         f"{analyzer_url}/analyze",
                         json=msg.to_dict(),
-                        timeout=120.0   # Analyzer may take time calling the LLM
+                        timeout=300.0   # Analyzer may take time calling the LLM (DeepSeek reasoning)
                     )
                     if resp.status_code == 200:
                         print(f"[Orchestrator] ✓ Analyzer started processing")

@@ -1,6 +1,6 @@
 # Round-Table Paradigm Module
 
-from paradigms.round_table.agents import (
+from .agents import (
     AnalyzerAgent,
     StrategistAgent,
     ProposerAgent,

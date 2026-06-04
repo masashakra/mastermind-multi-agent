@@ -30,6 +30,51 @@ class ProposerAgent(BaseAgent):
             registry_url=registry_url,
         )
 
+    def should_request_constraints(self) -> bool:
+        """Decide if Proposer should REQUEST fresh constraints from Analyzer.
+
+        Uses LLM to determine if we need up-to-date constraint info or can rely on cached version.
+        """
+        # If we haven't received constraints yet, we must request
+        if not hasattr(self, 'last_constraints') or not self.last_constraints:
+            return True
+
+        # Check if we have significant new information (more guesses since last constraints)
+        try:
+            num_new_guesses = len(self.conversation) - (self.last_constraint_round or 0)
+            if num_new_guesses > 2:  # More than 2 new exchanges with constraints
+                return True
+        except:
+            pass
+
+        return False  # Reuse cached constraints
+
+    async def request_fresh_constraints(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
+        """REQUEST fresh constraint analysis from Analyzer using bidirectional messaging."""
+        try:
+            # Send REQUEST (is_question=True) to Analyzer
+            response_data = await self.send_a2a_message(
+                receiver_type="analyzer",
+                action="analyze",
+                payload={
+                    "clarification": "Please provide updated constraint analysis",
+                    "last_guess": game_state.get("last_guess", []),
+                    "feedback": game_state.get("feedback", {}),
+                    "guess_history": game_state.get("guess_history", []),
+                },
+                is_question=True  # WAIT for response
+            )
+
+            # Store the result and remember when we got it
+            if response_data and response_data.get("payload"):
+                self.last_constraints = response_data["payload"]
+                self.last_constraint_round = len(self.conversation)
+                return response_data["payload"]
+        except Exception as e:
+            print(f"[Proposer] Error requesting constraints: {e}")
+
+        return self.last_constraints if hasattr(self, 'last_constraints') else {}
+
     def propose_guess(self, strategy: str, constraints_text: str, available_colors: List[str],
                       num_pegs: int, previous_guesses: List[List[str]]) -> Dict[str, Any]:
         """Generate a guess using persistent conversation history.
@@ -43,36 +88,44 @@ class ProposerAgent(BaseAgent):
         round_num = len(previous_guesses) + 1
 
         system_prompt = f"""You are the Proposer agent in a Mastermind game.
-Your role: propose the BEST next guess by systematically using constraint information.
+Your role: propose the BEST next guess by STRICTLY respecting constraints and using strategy.
 
-RULES:
+CRITICAL RULES:
 - Secret code: exactly {num_pegs} color slots, colors CAN repeat
 - Available colors: {', '.join(available_colors)}
 - NEVER repeat any previous guess
-- Every color that appears must be justified by constraints
+- NEVER use impossible colors (marked as impossible in constraint analysis)
+- NEVER violate locked positions
+- ALWAYS reposition misplaced colors to different positions
+- Every color must either be: (A) tested, (B) locked, or (C) repositioned
 
-GUESS GENERATION STEPS:
-1. REVIEW CONSTRAINTS: What do we know?
-   - Which positions are LOCKED (confirmed color at position)?
-   - Which colors are IMPOSSIBLE (definitely not in secret)?
-   - Which colors are CONFIRMED but MISPLACED (exist but wrong position)?
+CONSTRAINT-DRIVEN GUESS GENERATION:
+1. PARSE CONSTRAINTS STRICTLY:
+   - Extract EXACTLY which colors are impossible
+   - Extract EXACTLY which positions are locked with their colors
+   - Extract EXACTLY which colors must be repositioned
+   - CRITICAL: Identify colors that appear MULTIPLE TIMES in the secret (duplicates!)
 
-2. BUILD CANDIDATE COLORS: For each position, which colors are possible?
-   - Position 0: {{colors that don't violate constraints}}
-   - Position 1: {{colors that don't violate constraints}}
-   - etc.
+2. ELIMINATE OPTIONS:
+   - Remove all impossible colors from consideration
+   - For locked positions, fix those colors
+   - For confirmed-but-misplaced colors, pick different positions
+   - If a color must appear multiple times, plan all occurrences strategically
 
-3. APPLY STRATEGY: Based on strategy (exploration/refinement), pick colors:
-   - EXPLORATION: Test untested colors
-   - REFINEMENT: Test positions for confirmed-but-misplaced colors
-   - CONFIRMATION: Lock down final positions
+3. FILL REMAINING POSITIONS:
+   - Use strategy guidance (exploration vs refinement)
+   - If exploring: test untested colors AND test duplicate color placements
+   - If refining: test confirmed colors in NEW position combinations
+   - Generate DIVERSE guesses that try different position placements for duplicates
 
-4. VALIDATE GUESS: Does this guess violate ANY constraints?
-   - Check locked positions match exactly
-   - Check no impossible colors are used
-   - Check misplaced colors appear in different positions
+4. STRICT VALIDATION BEFORE FINALIZING:
+   - Does every color in my guess respect constraints?
+   - Are locked positions exactly matched?
+   - Are misplaced colors in different positions?
+   - Is this guess DIFFERENT from all past guesses? (NEVER resubmit!)
+   - If colors repeat, did I test new position combinations?
 
-5. FINALIZE: Commit to the guess
+5. OUTPUT: Commit to the guess with detailed reasoning
 
 You remember all previous guesses and reasoning via conversation history."""
 

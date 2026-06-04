@@ -5,7 +5,6 @@ from paradigms.boss_worker.agents import (
     StrategistAgent,
     ProposerAgent,
     ValidatorAgent,
-    LoggerAgent,
     MetricsAgent,
 )
 
@@ -14,6 +13,5 @@ __all__ = [
     "StrategistAgent",
     "ProposerAgent",
     "ValidatorAgent",
-    "LoggerAgent",
     "MetricsAgent",
 ]

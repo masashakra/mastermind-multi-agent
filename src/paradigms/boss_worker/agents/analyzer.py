@@ -1,35 +1,45 @@
 # Boss-Worker Analyzer Agent
-# Fully autonomous LLM-based constraint extraction with state tracking
 # Interprets feedback and extracts constraints
+# Only receives from Boss, only replies to Boss
 
 from typing import List, Dict, Any, Optional
 import sys
 from pathlib import Path
 
-# Add parent directories to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base.base_agent import BaseAgent
-from base.agent_card import ANALYZER_CARD
 from communication.protocol import A2ACommunicationLayer
 from base.role import AgentRole, ParadigmType
 
 
-# Agent Card for Boss-Worker Analyzer (OpenAPI format)
 AGENT_CARD = {
-    **ANALYZER_CARD,
     "agent_id": "analyzer_boss_worker",
+    "agent_name": "Analyzer",
+    "agent_type": "worker",
     "paradigm": "boss_worker",
-    "description": "Analyzer for Boss-Worker paradigm. Extracts constraints from feedback using intelligent reasoning.",
+    "version": "1.0.0",
+    "description": "Analyzer for Boss-Worker paradigm. Takes directions from Boss, extracts constraints from feedback.",
+    "url": "http://localhost:8102",
+    "health_endpoint": "/health",
+    "capabilities": {
+        "analyze": {
+            "description": "Analyze feedback and extract constraints",
+            "parameters": {"type": "object"},
+            "returns": {"type": "object"},
+        },
+    },
+    "constraints_owned": ["Constraint extraction"],
+    "team_members": ["boss"],
+    "can_communicate": False,  # Workers in boss-worker don't communicate with peers
 }
 
 
 class AnalyzerAgent(BaseAgent):
-    """Boss-Worker Analyzer Agent - Fully Autonomous
+    """Boss-Worker Analyzer Agent
 
-    Interprets feedback and extracts constraints using intelligent reasoning.
-    Maintains hypothesis tracking and builds confidence over multiple rounds.
-    Makes independent decisions about constraint validity and confidence.
+    Interprets feedback and extracts constraints.
+    Receives assignments from Boss, reports back to Boss with analysis.
     """
 
     def __init__(
@@ -39,8 +49,9 @@ class AnalyzerAgent(BaseAgent):
         role: Optional[AgentRole] = None,
         paradigm: Optional[ParadigmType] = None,
         team_members: Optional[List[str]] = None,
-        can_communicate: bool = True,
+        can_communicate: bool = False,
         constraints_owned: Optional[List[str]] = None,
+        registry_url: Optional[str] = None,
     ):
         super().__init__(
             name="Analyzer_BossWorker",
@@ -48,170 +59,120 @@ class AnalyzerAgent(BaseAgent):
             comm_layer=comm_layer,
             role=role or AgentRole.ANALYZER,
             paradigm=paradigm or ParadigmType.BOSS_WORKER,
-            team_members=team_members or ["boss", "strategist", "proposer", "validator"],
+            team_members=team_members or ["boss"],
             can_communicate=can_communicate,
             constraints_owned=constraints_owned or ["Constraint extraction"],
+            registry_url=registry_url,
         )
-        # State tracking - Analyzer learns and refines hypotheses
-        self.analysis_history = []
-        self.constraint_hypotheses = []
-        self.confidence_evolution = []
-        self.identified_colors = set()
-        self.locked_positions = {}
 
     def analyze_feedback(
         self,
         last_guess: List[str],
         feedback: Dict[str, int],
-        previous_guesses: List[Dict[str, Any]] = None
+        previous_guesses: List[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Analyze feedback and extract constraints using intelligent reasoning.
+        """Analyze latest feedback using persistent conversation history.
 
-        The analyzer uses its own judgment to interpret feedback, considering:
-        - All historical data to identify patterns
-        - Multiple hypotheses about which colors are involved
-        - Confidence evolution as more data is collected
-        - Strategic implications of the findings
+        The agent remembers all its prior reasoning via self.conversation —
+        it only needs to see the NEW round's info each time.
         """
         correct_pegs = feedback.get("correct_pegs", 0)
         correct_positions = feedback.get("correct_positions", 0)
-        previous_guesses = previous_guesses or []
+        round_num = len(previous_guesses or []) + 1
 
-        # Include analysis history for context
-        history_context = f"Round {len(previous_guesses) + 1}"
-        if previous_guesses:
-            history_context += f": {len(previous_guesses)} rounds completed so far"
+        system_prompt = f"""You are the Analyzer agent in a Mastermind game.
+Your role: extract constraints from every guess+feedback pair using EXPLICIT step-by-step reasoning.
 
-        # Format detailed history
-        history_text = ""
-        if previous_guesses:
-            history_text = "\n".join([
-                f"  Round {i+1}: Guess {g.get('guess')} → {g.get('feedback', {}).get('correct_pegs', 0)} colors, {g.get('feedback', {}).get('correct_positions', 0)} positions"
-                for i, g in enumerate(previous_guesses[-5:])  # Last 5 rounds for context
-            ])
-        else:
-            history_text = "  [This is the first round - no previous data]"
+MASTERMIND RULES:
+- correct_pegs = total colors in guess that exist in secret (counting duplicates!)
+- correct_positions = colors in the EXACT right position
+- If pegs=0 → NONE of those colors are in the secret (all impossible)
+- misplaced = pegs - positions = colors that exist but in WRONG position
+- Colors CAN repeat in the secret (CRITICAL: a color can appear 1, 2, 3, or 4 times!)
 
-        # Get explicit role context
-        role_context = self.get_role_system_prompt()
+IMPORTANT DUPLICATE HANDLING:
+- If a guess has a color twice (e.g., position 0 and 3), and it gets locked in one position, check the other
+- Example: guess=['white', 'red', 'black', 'white'], pos_match=2 → white at pos 0 matches, but white at pos 3 is misplaced
+- Track each color occurrence separately by position, not just as a unique color
 
-        # Full LLM-based analysis with strategic reasoning
-        prompt = f"""{role_context}
+ANALYSIS STEPS (follow exactly):
+1. IDENTIFY EXISTING COLORS: Which colors (including duplicates) from this guess exist in secret?
+   → Count total occurrences: if pegs=3 with 2 position matches, 3 colors match the secret
+   → A color can appear multiple times in secret (handle this explicitly!)
 
-## YOUR TASK (Constraint Extraction in Boss-Worker Paradigm)
-You are the Analyzer. Your job is to interpret feedback and extract meaningful constraints.
-Use your reasoning to make sense of the data and identify patterns.
+2. IDENTIFY LOCKED POSITIONS: Which guess colors match the exact position?
+   → For each position, mark it as locked if it matches
+   → If a color appears multiple times in guess, some can be locked while others are misplaced
 
-CURRENT FEEDBACK:
-- Last Guess: {last_guess}
-- Correct Pegs: {correct_pegs} (colors in the code)
-- Correct Positions: {correct_positions} (colors in right positions)
+3. IDENTIFY MISPLACED COLORS: Which colors are in secret but wrong position?
+   → misplaced = correct_pegs - correct_positions (count occurrences!)
+   → Track each misplaced occurrence and its wrong positions
+   → Key: A color can have some occurrences locked AND some misplaced
 
-{history_context}
+4. IDENTIFY IMPOSSIBLE COLORS: Which colors are definitely NOT in secret?
+   → Any color with pegs=0 in any guess where it appeared
+   → Even if color appears once elsewhere, if one occurrence gets pegs=0, it's impossible
 
-PREVIOUS GUESSES (with feedback):
-{history_text}
+5. IDENTIFY UNKNOWNS: What's left to discover?
+   → How many more color slots need to be filled?
+   → Which positions are still open?
+   → How many duplicates do we need to find?
 
-ANALYSIS APPROACH:
-1. Color identification: Which colors are definitely in the code?
-2. Position analysis: Which positions are locked/secure?
-3. Misplaced analysis: Which colors exist but are in wrong positions?
-4. Elimination: Which colors are definitely NOT in the code?
-5. Confidence: How certain are you about each constraint?
+You have a perfect memory of all prior analysis above. Build on it — never contradict previous rounds."""
 
-Use deductive reasoning:
-- If correct_pegs increased from previous round, what new colors entered?
-- If correct_positions increased, which position(s) likely locked?
-- If a color was in a previous guess with 0 feedback, it's definitely out.
-- Track patterns across multiple rounds.
+        user_message = f"""Round {round_num} result:
+Guess: {last_guess}
+Feedback: {correct_pegs} correct colors (pegs), {correct_positions} correct positions
+Misplaced: {correct_pegs - correct_positions} colors in secret but wrong position
 
-Your analysis should:
-- Explain your reasoning step-by-step
-- Identify the most confident constraints
-- Flag any ambiguities or alternative hypotheses
-- Consider what you still need to figure out
+Apply analysis steps 1-5 from above for this round ONLY. Then combine with ALL prior analysis.
 
 OUTPUT (JSON ONLY):
 {{
   "reasoning_steps": [
-    "[Step 1: Color identification reasoning]",
-    "[Step 2: Position analysis reasoning]",
-    "[Step 3: Misplaced colors reasoning]",
-    "[Step 4: Elimination reasoning]",
-    "[Step 5: Confidence assessment]"
+    "Step 1: IDENTIFY EXISTING COLORS - ...",
+    "Step 2: IDENTIFY LOCKED POSITIONS - ...",
+    "Step 3: IDENTIFY MISPLACED COLORS - ...",
+    "Step 4: IDENTIFY IMPOSSIBLE COLORS - ...",
+    "Step 5: IDENTIFY UNKNOWNS - ..."
   ],
-  "correct_positions": [
-    {{"position": 0, "color": "red", "confidence": 0.9}}
-  ],
-  "correct_colors_wrong_position": ["green", "yellow"],
-  "impossible_colors": ["blue", "white"],
-  "color_analysis": {{
-    "confirmed_in_code": ["red", "green", "yellow"],
-    "possibly_in_code": ["orange"],
-    "definitely_not_in_code": ["blue", "white", "black"],
-    "still_unknown": ["all others"]
-  }},
-  "constraints": [
-    "Position 0: red (CONFIRMED - locked)",
-    "green exists but not at position 2",
-    "yellow exists but not at position 3",
-    "blue is IMPOSSIBLE - failed in round 1"
-  ],
-  "analysis": "Found 3 colors (1 locked, 2 misplaced). Blue eliminated. Need to find 4th color.",
-  "confidence": 0.8,
-  "next_focus": "Find 4th color and lock remaining positions",
-  "alternative_hypotheses": ["Could orange be in code instead of yellow"]
+  "analysis": "Summary of what we know now from all rounds combined",
+  "impossible_colors": ["all colors confirmed absent"],
+  "confirmed_colors": ["all colors confirmed present"],
+  "locked_positions": [{{"position": 0, "color": "white", "rounds_confirmed": 1}}],
+  "misplaced_colors": [{{"color": "red", "wrong_positions": [2, 3]}}],
+  "constraints": ["explicit constraints for strategy"],
+  "confidence": 0.85
 }}"""
 
-        response = self.call_llm(prompt)
-        result = self.parse_json_response(response)
+        try:
+            response = self.call_llm_conversation(system_prompt, user_message)
+        except Exception as e:
+            print(f"[Analyzer] ERROR in call_llm_conversation: {type(e).__name__}: {e}")
+            raise
 
-        # Fallback if parsing fails
-        if "error" in result:
+        try:
+            result = self.parse_json_response(response)
+        except Exception as e:
+            print(f"[Analyzer] ERROR in parse_json_response: {type(e).__name__}: {e}")
+            raise
+
+        if "error" in result or "analysis" not in result:
             result = {
-                "correct_positions": [],
-                "correct_colors_wrong_position": [],
+                "reasoning_steps": [],
+                "analysis": f"Analysis complete. Pegs={correct_pegs}, Positions={correct_positions}",
                 "impossible_colors": [],
-                "constraints": [
-                    f"{correct_pegs} colors in code",
-                    f"{correct_positions} in correct positions",
-                    f"{correct_pegs - correct_positions} misplaced colors"
-                ],
-                "analysis": "Basic analysis (LLM parsing failed)",
-                "confidence": 0.3,
-                "reasoning_steps": ["Error in LLM response - using basic math"],
-                "next_focus": "Continue gathering data"
+                "confirmed_colors": [],
+                "locked_positions": [],
+                "misplaced_colors": [],
+                "constraints": [],
+                "confidence": 0.5,
             }
-
-        # Track analysis in state for learning
-        self.analysis_history.append({
-            "round": len(previous_guesses) + 1,
-            "guess": last_guess,
-            "feedback": feedback,
-            "analysis": result.get("analysis", ""),
-            "confidence": result.get("confidence", 0.5)
-        })
-
-        # Update identified colors and positions
-        if "correct_positions" in result:
-            for pos_data in result.get("correct_positions", []):
-                if isinstance(pos_data, dict):
-                    self.locked_positions[pos_data.get("position")] = pos_data.get("color")
-                    self.identified_colors.add(pos_data.get("color"))
-
-        for color in result.get("correct_colors_wrong_position", []):
-            self.identified_colors.add(color)
-
-        # Store confidence evolution
-        self.confidence_evolution.append(result.get("confidence", 0.5))
 
         return result
 
     def process(self, **kwargs) -> Dict[str, Any]:
-        """Process method required by BaseAgent abstract class.
-
-        Delegates to analyze_feedback for this agent.
-        """
+        """Process method required by BaseAgent."""
         return self.analyze_feedback(
             last_guess=kwargs.get("last_guess", []),
             feedback=kwargs.get("feedback", {}),

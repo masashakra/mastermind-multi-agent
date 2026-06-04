@@ -182,57 +182,90 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
             }
             outgoing_payload = {**result, **game_context}
 
-            # Autonomously decide next peer via LLM
+            # NEW: Proactively PUSH constraints to multiple agents based on game state
+            # Use LLM to decide who needs constraint updates
+            import json as json_module
             game_state = msg.payload
             available_peers = ["strategist", "proposer", "validator"]
 
-            routing = await agent.decide_next_peer(
-                my_work=result,
-                available_peers=available_peers,
-                game_state=game_state
-            )
+            # Ask LLM: who should receive constraint updates?
+            constraint_distribution_prompt = f"""You are the Analyzer agent in a Mastermind game.
+You just analyzed the latest feedback and extracted constraints.
 
-            next_peer = routing.get("next_peer", "strategist")
-            action = routing.get("action", "strategy")
+ANALYSIS RESULT:
+{json_module.dumps(result, indent=2)}
 
-            # Validate routing decision
-            peer_actions = {"analyzer": "analyze", "strategist": "strategy", "proposer": "propose", "validator": "validate"}
-            expected_action = peer_actions.get(next_peer, "strategy")
+AVAILABLE AGENTS TO RECEIVE CONSTRAINTS:
+- strategist: Receives constraints to inform strategy decisions
+- proposer: Receives constraints to guide guess generation
+- validator: Receives constraints to validate proposed guesses
 
-            if next_peer not in available_peers:
-                print(f"[Analyzer] WARNING: Invalid peer '{next_peer}' not in {available_peers}. Using fallback.")
-                next_peer = available_peers[0] if available_peers else "strategist"
-                action = peer_actions.get(next_peer, "strategy")
-            elif action != expected_action:
-                print(f"[Analyzer] WARNING: Wrong action '{action}' for peer '{next_peer}'. Expected '{expected_action}'.")
-                action = expected_action
+Which agents should receive your constraint updates?
+Consider:
+1. Strategist always needs constraints to form strategy
+2. Proposer always needs constraints to generate valid guesses
+3. Validator needs constraints to validate against
 
-            print(f"[Analyzer] Decision: send to {next_peer} via /{action}")
+For now, push to ALL three agents to ensure full constraint distribution.
+
+OUTPUT (JSON ONLY):
+{{
+  "constraint_recipients": ["strategist", "proposer", "validator"],
+  "reasoning": "All agents need constraints for their roles"
+}}"""
+
+            constraint_dist = agent.call_llm(constraint_distribution_prompt)
+            try:
+                constraint_dist = agent.parse_json_response(constraint_dist)
+            except:
+                constraint_dist = {"constraint_recipients": ["strategist", "proposer", "validator"]}
+
+            recipients = constraint_dist.get("constraint_recipients", ["strategist", "proposer", "validator"])
+            recipients = [p for p in recipients if p in available_peers]  # Validate
+
+            if not recipients:
+                recipients = ["strategist"]  # Fallback
+
+            print(f"[Analyzer] Distributing constraints to: {recipients}")
 
             # Log routing decision
             from communication.message_logger import get_message_logger
             logger = get_message_logger()
             logger.log_routing_decision(
                 agent_name="Analyzer_RoundTable",
-                decision="Autonomous routing",
-                next_peer=next_peer,
-                action=action,
-                reasoning=routing.get("reasoning", ""),
+                decision="Proactive constraint distribution",
+                next_peer=",".join(recipients),
+                action="receive_constraints",
+                reasoning=constraint_dist.get("reasoning", ""),
             )
 
-            # Autonomously send to next peer (fire-and-forget, non-blocking)
-            async def send_peer_message():
+            # Proactively send constraints to all identified recipients (fire-and-forget)
+            async def distribute_constraints():
+                for recipient in recipients:
+                    try:
+                        await agent.send_a2a_message(
+                            receiver_type=recipient,
+                            action="receive_constraints",  # NEW action for constraint delivery
+                            payload=outgoing_payload,
+                            routing_decision=f"constraint distribution to {recipient}",
+                        )
+                        print(f"[Analyzer] ✓ Sent constraints to {recipient}")
+                    except Exception as e:
+                        print(f"[Analyzer] ✗ Error sending to {recipient}: {e}")
+
+                # ALSO: Send to Strategist to trigger the workflow (action="strategy")
                 try:
                     await agent.send_a2a_message(
-                        receiver_type=next_peer,
-                        action=action,
+                        receiver_type="strategist",
+                        action="strategy",
                         payload=outgoing_payload,
-                        routing_decision=f"send to {next_peer}",
+                        routing_decision="trigger workflow after constraint distribution",
                     )
+                    print(f"[Analyzer] ✓ Sent /strategy to strategist to start workflow")
                 except Exception as e:
-                    print(f"[Analyzer] Error sending to {next_peer}: {e}")
+                    print(f"[Analyzer] ✗ Error triggering workflow: {e}")
 
-            asyncio.create_task(send_peer_message())
+            asyncio.create_task(distribute_constraints())
 
             # Return response immediately to original sender (don't wait for peer send)
             response_msg = A2AMessage.response(
@@ -321,19 +354,39 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
                 )
                 return response_msg.to_dict()
 
-            guess_history = msg.payload.get("guess_history", [])
-            difficulty = msg.payload.get("difficulty", "medium")
-            analysis = msg.payload.get("analysis", "")  # Constraint analysis from Analyzer
+            guess_history     = msg.payload.get("guess_history", [])
+            difficulty        = msg.payload.get("difficulty", "medium")
+            available_colors  = msg.payload.get("available_colors", [])
+            analysis          = msg.payload.get("analysis", "")
             impossible_colors = msg.payload.get("impossible_colors", [])
-            locked_positions = msg.payload.get("locked_positions", [])
+            confirmed_colors  = msg.payload.get("confirmed_colors", [])   # ← was missing
+            locked_positions  = msg.payload.get("locked_positions", [])
+            misplaced_colors  = msg.payload.get("misplaced_colors", [])
 
-            # Do the work — NOW Strategist has constraint data!
+            # NEW: Check if Strategist should REQUEST fresh constraints from Analyzer
+            if agent.should_request_constraints():
+                print(f"[Strategist] REQUEST: Asking Analyzer for fresh constraints...")
+                fresh_constraints = await agent.request_fresh_constraints({
+                    "guess_history": guess_history,
+                })
+                if fresh_constraints:
+                    analysis          = fresh_constraints.get("analysis", "")
+                    impossible_colors = fresh_constraints.get("impossible_colors", [])
+                    confirmed_colors  = fresh_constraints.get("confirmed_colors", [])
+                    locked_positions  = fresh_constraints.get("locked_positions", [])
+                    misplaced_colors  = fresh_constraints.get("misplaced_colors", [])
+                    print(f"[Strategist] ✓ Received fresh constraints from Analyzer")
+
+            # Do the work — NOW Strategist has full constraint data
             result = agent.propose_strategy(
                 guess_history=guess_history,
                 difficulty=difficulty,
+                available_colors=available_colors,
                 analysis=analysis,
                 impossible_colors=impossible_colors,
-                locked_positions=locked_positions
+                confirmed_colors=confirmed_colors,
+                locked_positions=locked_positions,
+                misplaced_colors=misplaced_colors,
             )
 
             # Carry game context + constraints forward
@@ -404,6 +457,41 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
             else:
                 return {"error": str(e)}
             return error_msg.to_dict()
+
+    @app.post("/receive_constraints")
+    async def handle_receive_constraints(request: Request):
+        """Receive proactively-pushed constraints from Analyzer."""
+        try:
+            request_data = await request.json()
+            msg = A2AMessage.from_dict(request_data)
+
+            # Store in agent memory for later use
+            agent.memory.receive_message(
+                from_agent=msg.sender_id.split("_")[0],
+                action=msg.action,
+                payload=msg.payload,
+                msg_id=msg.message_id,
+                is_reply=False
+            )
+
+            # Store constraints for next decision
+            agent.last_constraints = msg.payload
+
+            # If this is a question, acknowledge; otherwise just store
+            if msg.is_question:
+                response_msg = A2AMessage.response(
+                    request=msg,
+                    payload={"acknowledged": True},
+                    status=A2AStatus.OK,
+                    is_reply=True
+                )
+                return response_msg.to_dict()
+            else:
+                # Fire-and-forget: no response needed
+                return {"status": "ok"}
+        except Exception as e:
+            print(f"[Strategist] Error handling constraint update: {e}")
+            return {"error": str(e)}
 
     return app
 
@@ -479,15 +567,49 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 )
                 return response_msg.to_dict()
 
-            strategy = msg.payload.get("strategy", "")
+            strategy         = msg.payload.get("strategy", "")
+            colors_to_use    = msg.payload.get("colors_to_use", [])
+            colors_to_avoid  = msg.payload.get("colors_to_avoid", [])
+            positions_to_test = msg.payload.get("positions_to_test", {})
             constraints_text = msg.payload.get("constraints", "")
             available_colors = msg.payload.get("available_colors", [])
-            num_pegs = msg.payload.get("num_pegs", 4)
-            guess_history = msg.payload.get("guess_history", [])
+            num_pegs         = msg.payload.get("num_pegs", 4)
+            guess_history    = msg.payload.get("guess_history", [])
+
+            # Also pull constraint fields passed through from Analyzer via Strategist
+            impossible_colors = msg.payload.get("impossible_colors", [])
+            confirmed_colors  = msg.payload.get("confirmed_colors", [])
+            locked_positions  = msg.payload.get("locked_positions", [])
+
+            # Build enriched constraints text from all available info
+            enriched = constraints_text
+            if impossible_colors:
+                enriched += f"\nImpossible colors (NEVER use): {impossible_colors}"
+            if confirmed_colors:
+                enriched += f"\nConfirmed colors (must be present): {confirmed_colors}"
+            if locked_positions:
+                enriched += f"\nLocked positions: {locked_positions}"
+            if colors_to_use:
+                enriched += f"\nStrategist recommends colors: {colors_to_use}"
+            if colors_to_avoid:
+                enriched += f"\nStrategist says avoid: {colors_to_avoid}"
+            if positions_to_test:
+                enriched += f"\nStrategist position guidance: {positions_to_test}"
+
+            # NEW: Check if Proposer should REQUEST fresh constraints from Analyzer
+            if agent.should_request_constraints():
+                print(f"[Proposer] REQUEST: Asking Analyzer for fresh constraints...")
+                fresh_constraints = await agent.request_fresh_constraints({
+                    "guess_history": guess_history,
+                    "available_colors": available_colors,
+                })
+                if fresh_constraints:
+                    enriched += f"\nFresh analysis: {fresh_constraints.get('analysis', '')}"
+                    print(f"[Proposer] ✓ Received fresh constraints from Analyzer")
 
             result = agent.propose_guess(
                 strategy=strategy,
-                constraints_text=str(constraints_text),
+                constraints_text=enriched,
                 available_colors=available_colors,
                 num_pegs=num_pegs,
                 previous_guesses=guess_history,
@@ -592,6 +714,41 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 return {"error": str(e)}
             return error_msg.to_dict()
 
+    @app.post("/receive_constraints")
+    async def handle_receive_constraints(request: Request):
+        """Receive proactively-pushed constraints from Analyzer."""
+        try:
+            request_data = await request.json()
+            msg = A2AMessage.from_dict(request_data)
+
+            # Store in agent memory for later use
+            agent.memory.receive_message(
+                from_agent=msg.sender_id.split("_")[0],
+                action=msg.action,
+                payload=msg.payload,
+                msg_id=msg.message_id,
+                is_reply=False
+            )
+
+            # Store constraints for next decision
+            agent.last_constraints = msg.payload
+
+            # If this is a question, acknowledge; otherwise just store
+            if msg.is_question:
+                response_msg = A2AMessage.response(
+                    request=msg,
+                    payload={"acknowledged": True},
+                    status=A2AStatus.OK,
+                    is_reply=True
+                )
+                return response_msg.to_dict()
+            else:
+                # Fire-and-forget: no response needed
+                return {"status": "ok"}
+        except Exception as e:
+            print(f"[Proposer] Error handling constraint update: {e}")
+            return {"error": str(e)}
+
     return app
 
 
@@ -670,6 +827,16 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
             expected_length = msg.payload.get("expected_length", 4)
             guess_history = msg.payload.get("guess_history", [])
             constraints = msg.payload.get("constraints", {})
+
+            # NEW: Check if Validator should REQUEST fresh constraints from Analyzer
+            if agent.should_request_constraints():
+                print(f"[Validator] REQUEST: Asking Analyzer for fresh constraints...")
+                fresh_constraints = await agent.request_fresh_constraints({
+                    "guess_history": guess_history,
+                })
+                if fresh_constraints:
+                    constraints = fresh_constraints
+                    print(f"[Validator] ✓ Received fresh constraints from Analyzer")
 
             # Do the work
             result = agent.validate_guess(
@@ -772,6 +939,41 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
             else:
                 return {"error": str(e)}
             return error_msg.to_dict()
+
+    @app.post("/receive_constraints")
+    async def handle_receive_constraints(request: Request):
+        """Receive proactively-pushed constraints from Analyzer."""
+        try:
+            request_data = await request.json()
+            msg = A2AMessage.from_dict(request_data)
+
+            # Store in agent memory for later use
+            agent.memory.receive_message(
+                from_agent=msg.sender_id.split("_")[0],
+                action=msg.action,
+                payload=msg.payload,
+                msg_id=msg.message_id,
+                is_reply=False
+            )
+
+            # Store constraints for next decision
+            agent.last_constraints = msg.payload
+
+            # If this is a question, acknowledge; otherwise just store
+            if msg.is_question:
+                response_msg = A2AMessage.response(
+                    request=msg,
+                    payload={"acknowledged": True},
+                    status=A2AStatus.OK,
+                    is_reply=True
+                )
+                return response_msg.to_dict()
+            else:
+                # Fire-and-forget: no response needed
+                return {"status": "ok"}
+        except Exception as e:
+            print(f"[Validator] Error handling constraint update: {e}")
+            return {"error": str(e)}
 
     return app
 

@@ -30,6 +30,36 @@ class ValidatorAgent(BaseAgent):
             registry_url=registry_url,
         )
 
+    def should_request_constraints(self) -> bool:
+        """Decide if Validator should REQUEST fresh constraints from Analyzer."""
+        # If we haven't received constraints yet, we must request
+        if not hasattr(self, 'last_constraints') or not self.last_constraints:
+            return True
+        return False  # Reuse cached constraints for now
+
+    async def request_fresh_constraints(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
+        """REQUEST fresh constraint verification from Analyzer using bidirectional messaging."""
+        try:
+            response_data = await self.send_a2a_message(
+                receiver_type="analyzer",
+                action="analyze",
+                payload={
+                    "clarification": "Please verify constraints for validation",
+                    "last_guess": game_state.get("last_guess", []),
+                    "feedback": game_state.get("feedback", {}),
+                    "guess_history": game_state.get("guess_history", []),
+                },
+                is_question=True  # WAIT for response
+            )
+
+            if response_data and response_data.get("payload"):
+                self.last_constraints = response_data["payload"]
+                return response_data["payload"]
+        except Exception as e:
+            print(f"[Validator] Error requesting constraints: {e}")
+
+        return self.last_constraints if hasattr(self, 'last_constraints') else {}
+
     def validate_guess(self, guess: List[str], available_colors: List[str],
                       expected_length: int, previous_guesses: List[List[str]],
                       constraints: Dict[str, Any]) -> Dict[str, Any]:

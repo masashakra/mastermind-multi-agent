@@ -174,7 +174,7 @@ class BaseAgent(ABC):
 
         # NEW: For round-table peer messaging (autonomous A2A communication)
         self.registry_url = registry_url
-        self.http_client = httpx.AsyncClient(timeout=300.0)  # 5 min — o3-mini can take ~60s
+        self.http_client = httpx.AsyncClient(timeout=600.0)  # 10 min — DeepSeek reasoning can take longer
 
         # NEW: Agent memory for tracking sent/received messages
         self.memory = AgentMemory(self.agent_id)
@@ -248,20 +248,15 @@ class BaseAgent(ABC):
             self.llm = {
                 "api_key": oai_key,
                 "type": "openai",
-                "model": "o3-mini",
+                "model": "gpt-4-turbo",
                 "base_url": "https://api.openai.com/v1",
             }
             print(f"[{self.name}] OpenAI o3-mini ready")
         elif self.provider == "ollama":
-            try:
-                from langchain_ollama import OllamaLLM
-                self.llm = OllamaLLM(model=self.model)
-            except ImportError:
-                try:
-                    from langchain.llms import Ollama
-                    self.llm = Ollama(model=self.model)
-                except ImportError:
-                    raise ImportError("Install langchain-ollama: pip install langchain-ollama")
+            # Use phi3.5 by default (top performer in MastermindEval ICLR 2025)
+            ollama_model = self.model if self.model != "mistral" else "phi3.5"
+            self.llm = type("OllamaConfig", (), {"model": ollama_model})()
+            print(f"[{self.name}] Ollama: model={ollama_model} (local, free)")
         elif self.provider == "claude":
             try:
                 from anthropic import Anthropic
@@ -285,7 +280,42 @@ class BaseAgent(ABC):
         Returns:
             LLM response as string
         """
-        if self.provider not in ("groq", "deepseek", "openai"):
+        # DEBUG
+        if hasattr(self, '_first_call'):
+            pass
+        else:
+            model = getattr(self.llm, 'model', 'N/A')
+            print(f"[{self.name}] DEBUG: Using provider '{self.provider}', model '{model}'")
+            self._first_call = True
+
+        if self.provider == "ollama":
+            # Ollama: use native chat API for proper multi-turn conversation
+            import requests as _req
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(self.conversation[-50:])
+            messages.append({"role": "user", "content": user_message})
+            self.call_count += 1
+            response = None
+            for attempt in range(3):
+                try:
+                    resp = _req.post(
+                        "http://localhost:11434/api/chat",
+                        json={
+                            "model": getattr(self.llm, 'model', 'phi3.5'),
+                            "messages": messages,
+                            "stream": False,
+                        },
+                        timeout=300,
+                    )
+                    if resp.status_code == 200:
+                        response = resp.json()["message"]["content"]
+                        break
+                    else:
+                        print(f"[{self.name}] Ollama error {resp.status_code}: {resp.text[:100]}")
+                except Exception as e:
+                    print(f"[{self.name}] Ollama error (attempt {attempt+1}/3): {e}")
+                    time.sleep(5)
+        elif self.provider not in ("groq", "deepseek", "openai"):
             # Fallback for other providers: flatten to single prompt
             history_text = ""
             for msg in self.conversation[-10:]:
@@ -294,9 +324,10 @@ class BaseAgent(ABC):
             full_prompt = f"{system_prompt}\n\nPREVIOUS REASONING:{history_text}\n\nCURRENT INPUT:\n{user_message}"
             response = self.call_llm(full_prompt)
         else:
-            # Groq / DeepSeek: true multi-turn — pass all prior messages
+            # Groq / DeepSeek: true multi-turn — pass prior messages
+            # Use a larger window (50 messages ≈ 25 turns) to maintain context across rounds
             messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(self.conversation[-20:])  # last 20 messages max
+            messages.extend(self.conversation[-50:])  # last 50 messages max (~25 turns)
             messages.append({"role": "user", "content": user_message})
 
             self.call_count += 1
@@ -307,29 +338,68 @@ class BaseAgent(ABC):
                 import requests as _req
                 for attempt in range(3):
                     try:
+                        # Build request parameters based on model
+                        request_json = {
+                            "model": self.llm["model"],
+                            "messages": messages,
+                        }
+
+                        # DEBUG: Log the request being sent
+                        if attempt == 0:
+                            print(f"[{self.name}] OpenAI request: model={request_json['model']}, messages={len(request_json['messages'])}, tokens≈{sum(len(str(m).split()) for m in request_json['messages'])}")
+                            print(f"[{self.name}] Request body size: {len(str(request_json))} bytes")
+
+                        # NOTE: o3-mini's reasoning_effort can consume response tokens
+                        # for internal reasoning, leaving fewer tokens for actual output.
+                        # For structured JSON output, we skip reasoning to preserve response tokens.
+                        # This should eliminate the 500-char response truncation issue.
+                        if "o3" in self.llm["model"]:
+                            # REMOVED: reasoning_effort was causing response starvation
+                            pass
+
+                        print(f"[{self.name}] Posting to {self.llm['base_url']}/chat/completions...")
                         resp = _req.post(
                             f"{self.llm['base_url']}/chat/completions",
                             headers={"Authorization": f"Bearer {self.llm['api_key']}"},
-                            json={
-                                "model": self.llm["model"],
-                                "messages": messages,
-                                "reasoning_effort": "low",  # low=fast, medium=balanced, high=thorough
-                            },
+                            json=request_json,
                             timeout=120,
                         )
+                        print(f"[{self.name}] Response: HTTP {resp.status_code}")
                         if resp.status_code == 200:
-                            response = resp.json()["choices"][0]["message"]["content"]
+                            resp_json = resp.json()
+                            response = resp_json["choices"][0]["message"]["content"]
+
+                            # TRACK TOKEN USAGE
+                            if "usage" in resp_json:
+                                input_tokens = resp_json["usage"].get("prompt_tokens", 0)
+                                output_tokens = resp_json["usage"].get("completion_tokens", 0)
+                                self.total_input_tokens += input_tokens
+                                self.total_output_tokens += output_tokens
+                                print(f"[{self.name}] Tokens: input={input_tokens}, output={output_tokens}, cumulative_input={self.total_input_tokens}, cumulative_output={self.total_output_tokens}")
+
+                            # DEBUG: Log actual response length from API
+                            if len(response) < 1000:
+                                print(f"[{self.name}] ⚠️  ACTUAL API RESPONSE: {len(response)} chars")
+                                if len(response) < 300:
+                                    print(f"[{self.name}]    Content: {response}")
                             break
                         elif resp.status_code == 429:
                             time.sleep(15 * (attempt + 1))
                         else:
+                            error_detail = "Unknown error"
+                            try:
+                                error_body = resp.json()
+                                error_detail = error_body.get("error", {}).get("message", str(error_body))
+                            except Exception as json_err:
+                                error_detail = f"{resp.text[:300] if resp.text else f'HTTP {resp.status_code}'} (json parse error: {str(json_err)})"
+                            print(f"[{self.name}] OpenAI API {resp.status_code}: {error_detail}")
                             resp.raise_for_status()
                     except Exception as e:
-                        print(f"[{self.name}] OpenAI error: {e}")
+                        print(f"[{self.name}] OpenAI error (attempt {attempt+1}/3): {str(e)}")
                         time.sleep(5)
             elif self.provider == "deepseek":
                 # DeepSeek single key, retry on failure
-                for attempt in range(3):
+                for attempt in range(2):  # 2 attempts × 90s = 180s max
                     try:
                         resp = _req.post(
                             f"{self.llm['base_url']}/chat/completions",
@@ -337,14 +407,24 @@ class BaseAgent(ABC):
                             json={
                                 "model": self.llm["model"],
                                 "messages": messages,
-                                "max_tokens": 8000,
+                                "max_tokens": 16000,  # R1 needs space for reasoning chain
                                 "temperature": 0.6,
                             },
-                            timeout=180,
+                            timeout=90,  # 90s — R1 rarely needs more; avoids 18-min hangs
                         )
                         if resp.status_code == 200:
-                            msg = resp.json()["choices"][0]["message"]
+                            resp_json = resp.json()
+                            msg = resp_json["choices"][0]["message"]
                             response = msg.get("content", "") or msg.get("reasoning_content", "")
+
+                            # TRACK TOKEN USAGE
+                            if "usage" in resp_json:
+                                input_tokens = resp_json["usage"].get("prompt_tokens", 0)
+                                output_tokens = resp_json["usage"].get("completion_tokens", 0)
+                                self.total_input_tokens += input_tokens
+                                self.total_output_tokens += output_tokens
+                                print(f"[{self.name}] Tokens: input={input_tokens}, output={output_tokens}, cumulative_input={self.total_input_tokens}, cumulative_output={self.total_output_tokens}")
+
                             break
                         elif resp.status_code == 429:
                             wait = 15 * (attempt + 1)
@@ -376,7 +456,17 @@ class BaseAgent(ABC):
                             timeout=60
                         )
                         if resp.status_code == 200:
-                            response = resp.json()["choices"][0]["message"]["content"]
+                            resp_json = resp.json()
+                            response = resp_json["choices"][0]["message"]["content"]
+
+                            # TRACK TOKEN USAGE
+                            if "usage" in resp_json:
+                                input_tokens = resp_json["usage"].get("prompt_tokens", 0)
+                                output_tokens = resp_json["usage"].get("completion_tokens", 0)
+                                self.total_input_tokens += input_tokens
+                                self.total_output_tokens += output_tokens
+                                print(f"[{self.name}] Tokens: input={input_tokens}, output={output_tokens}, cumulative_input={self.total_input_tokens}, cumulative_output={self.total_output_tokens}")
+
                             break
                         elif resp.status_code == 429:
                             self.llm["key_index"] = (key_idx + 1) % len(keys)
@@ -396,6 +486,12 @@ class BaseAgent(ABC):
         self.conversation.append({"role": "user",      "content": user_message})
         self.conversation.append({"role": "assistant",  "content": response})
 
+        # DEBUG: Check actual response length BEFORE logging truncation
+        if len(response) < 1000:
+            print(f"[{self.name}] DEBUG Turn {len(self.conversation)//2}: Actual LLM response length: {len(response)} chars")
+            if len(response) < 600:
+                print(f"[{self.name}]   Response ends with: ...{response[-50:]}")
+
         # Log conversation turns
         from communication.message_logger import get_message_logger
         logger = get_message_logger()
@@ -404,13 +500,13 @@ class BaseAgent(ABC):
             agent_name=self.name,
             turn=turn,
             role="user",
-            content=user_message[:500],  # Truncate for file size
+            content=user_message[:2000],
         )
         logger.log_conversation(
             agent_name=self.name,
             turn=turn,
             role="assistant",
-            content=response[:500],
+            content=response[:4000],  # Enough to capture full JSON output
         )
 
         return response
@@ -506,10 +602,10 @@ class BaseAgent(ABC):
                             json={
                                 "model": self.llm["model"],
                                 "messages": [{"role": "user", "content": prompt}],
-                                "max_tokens": 4096,
+                                "max_tokens": 16000,  # R1 needs space for reasoning chain
                                 "temperature": 0.6,
                             },
-                            timeout=120,
+                            timeout=300,
                         )
                         if resp.status_code == 200:
                             msg = resp.json()["choices"][0]["message"]
@@ -1088,6 +1184,19 @@ You are an autonomous AI agent. Make decisions based on:
 
 You can communicate with other team members via A2A messages.
 All your responses must be valid JSON."""
+
+    def get_token_usage(self) -> Dict[str, int]:
+        """Get cumulative token usage for this agent.
+
+        Returns:
+            Dictionary with input_tokens, output_tokens, and total
+        """
+        return {
+            "input_tokens": self.total_input_tokens,
+            "output_tokens": self.total_output_tokens,
+            "total_tokens": self.total_input_tokens + self.total_output_tokens,
+            "api_calls": self.call_count
+        }
 
     @abstractmethod
     def process(self, **kwargs) -> Dict[str, Any]:

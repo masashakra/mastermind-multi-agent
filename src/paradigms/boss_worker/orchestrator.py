@@ -22,7 +22,7 @@ from langgraph.graph import StateGraph, START, END
 
 from registry.registry_server import start_registry_server
 from paradigms.boss_worker.agents.agent_server import start_agent_servers
-from paradigms.boss_worker.agents.logger_server import start_logger_server
+# from paradigms.boss_worker.agents.logger_server import start_logger_server
 from paradigms.boss_worker.agents.metrics_server import start_metrics_server
 from paradigms.boss_worker.agents.boss import BossAgent
 from game_engine import GameEngine
@@ -58,20 +58,34 @@ class BossWorkerOrchestrator:
         print(f"\n[Orchestrator] Starting Boss-Worker — puzzle {puzzle['puzzle_id']}")
 
         # ── Start registry ────────────────────────────────────────────────────
-        self.registry_url = start_registry_server(port=8100)
+        # Find free port for registry to avoid TIME_WAIT conflicts
+        import socket
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 0))  # OS picks free port
+        registry_port = sock.getsockname()[1]
+        sock.close()
+        self.registry_url = start_registry_server(port=registry_port)
         print(f"[Orchestrator] Registry up at {self.registry_url}")
 
         # ── Start 4 worker servers (each self-registers on startup) ───────────
+        # Boss-Worker uses ports 8201-8207 (different from Round Table 8101-8107)
         self.agent_urls = start_agent_servers(
             provider=provider,
             registry_url=self.registry_url,
-            base_port=8101,
+            base_port=8201,
         )
         print(f"[Orchestrator] Workers online: {list(self.agent_urls.keys())}")
 
         # ── Start Logger and Metrics as real A2A agents ───────────────────────
-        self.logger_url = start_logger_server(self.registry_url, port=8105)
-        self.metrics_url = start_metrics_server(self.registry_url, port=8106)
+        # self.logger_url = start_logger_server(self.registry_url, port=8205)
+        # Skip metrics server to avoid startup delays
+        self.metrics_url = None
+        # try:
+        #     self.metrics_url = start_metrics_server(self.registry_url, port=8207)
+        # except Exception as e:
+        #     print(f"[Orchestrator] Warning: Metrics server failed: {e}")
+        #     self.metrics_url = None
 
         # ── Boss LLM agent ────────────────────────────────────────────────────
         self.boss = BossAgent(registry_url=self.registry_url, provider=provider)
@@ -218,7 +232,9 @@ class BossWorkerOrchestrator:
             "round_result":      {},
         }
 
+        print(f"[Orchestrator] Starting graph invocation...")
         final_state = self._graph.invoke(initial_state)
+        print(f"[Orchestrator] Graph invocation completed")
 
         elapsed       = time.time() - self.start_time
         guess_history = final_state.get("guess_history", [])
@@ -239,7 +255,6 @@ class BossWorkerOrchestrator:
             "rounds":        rounds_played,
             "elapsed_time":  elapsed,
             "guess_history": guess_history,
-            "message_count": len(self.boss.round_logs),
             "token_usage": {
                 "boss":  boss_tokens,
                 "total": boss_tokens,

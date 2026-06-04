@@ -31,6 +31,7 @@ from paradigms.boss_worker.agents.strategist import StrategistAgent, AGENT_CARD 
 from paradigms.boss_worker.agents.proposer import ProposerAgent, AGENT_CARD as PROPOSER_CARD
 from paradigms.boss_worker.agents.validator import ValidatorAgent, AGENT_CARD as VALIDATOR_CARD
 from base.agent_card_schema import A2ACapability
+from communication.a2a_message import A2AMessage, A2AStatus, A2AErrorCode
 
 
 # ── shared helpers ────────────────────────────────────────────────────────────
@@ -113,11 +114,36 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
 
     @app.post("/analyze")
     def analyze(body: Dict[str, Any]) -> Dict[str, Any]:
-        return agent.analyze_feedback(
-            last_guess=body.get("last_guess", []),
-            feedback=body.get("feedback", {}),
-            previous_guesses=body.get("previous_guesses", []),
-        )
+        try:
+            # ✅ Parse incoming A2AMessage
+            request_msg = A2AMessage.from_dict(body)
+            payload = request_msg.payload
+
+            # Execute analysis
+            result = agent.analyze_feedback(
+                last_guess=payload.get("last_guess", []),
+                feedback=payload.get("feedback", {}),
+                previous_guesses=payload.get("guess_history", []),
+            )
+
+            # ✅ Create proper A2A response envelope
+            response_msg = A2AMessage.response(
+                request=request_msg,
+                payload=result,
+                status=A2AStatus.OK,
+                is_reply=True
+            )
+            return response_msg.to_dict()
+
+        except Exception as e:
+            # ✅ Return A2A error response
+            error_msg = A2AMessage.error(
+                request=A2AMessage.from_dict(body) if body else None,
+                error_code=A2AErrorCode.INTERNAL_ERROR,
+                error_message=str(e),
+                status=A2AStatus.ERROR,
+            )
+            return error_msg.to_dict()
 
     return app
 
@@ -141,12 +167,41 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
     def agent_card():
         return card
 
-    @app.post("/strategy")
-    def strategy(body: Dict[str, Any]) -> Dict[str, Any]:
-        return agent.propose_strategy(
-            guess_history=body.get("guess_history", []),
-            difficulty=body.get("difficulty", "easy"),
-        )
+    @app.post("/propose_strategy")
+    def propose_strategy(body: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            # ✅ Parse incoming A2AMessage
+            request_msg = A2AMessage.from_dict(body)
+            payload = request_msg.payload
+
+            # Execute strategy
+            result = agent.propose_strategy(
+                guess_history=payload.get("guess_history", []),
+                difficulty=payload.get("difficulty", "easy"),
+                analysis=payload.get("analysis", ""),
+                impossible_colors=payload.get("impossible_colors", []),
+                locked_positions=payload.get("locked_positions", []),
+                misplaced_colors=payload.get("misplaced_colors", []),
+            )
+
+            # ✅ Create proper A2A response envelope
+            response_msg = A2AMessage.response(
+                request=request_msg,
+                payload=result,
+                status=A2AStatus.OK,
+                is_reply=True
+            )
+            return response_msg.to_dict()
+
+        except Exception as e:
+            # ✅ Return A2A error response
+            error_msg = A2AMessage.error(
+                request=A2AMessage.from_dict(body) if body else None,
+                error_code=A2AErrorCode.INTERNAL_ERROR,
+                error_message=str(e),
+                status=A2AStatus.ERROR,
+            )
+            return error_msg.to_dict()
 
     return app
 
@@ -170,15 +225,41 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
     def agent_card():
         return card
 
-    @app.post("/propose")
-    def propose(body: Dict[str, Any]) -> Dict[str, Any]:
-        return agent.propose_guess(
-            strategy=body.get("strategy", ""),
-            constraints_text=body.get("constraints_text", ""),
-            available_colors=body.get("available_colors", []),
-            num_pegs=body.get("num_pegs", 4),
-            previous_guesses=body.get("previous_guesses", []),
-        )
+    @app.post("/propose_guess")
+    def propose_guess(body: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            # ✅ Parse incoming A2AMessage
+            request_msg = A2AMessage.from_dict(body)
+            payload = request_msg.payload
+
+            # Execute proposal
+            result = agent.propose_guess(
+                guess_history=payload.get("guess_history", []),
+                available_colors=payload.get("available_colors", []),
+                difficulty=payload.get("difficulty", "easy"),
+                strategy=payload.get("strategy", {}),
+                analysis=payload.get("analysis", {}),
+                num_pegs=payload.get("num_pegs", 4),
+            )
+
+            # ✅ Create proper A2A response envelope
+            response_msg = A2AMessage.response(
+                request=request_msg,
+                payload=result,
+                status=A2AStatus.OK,
+                is_reply=True
+            )
+            return response_msg.to_dict()
+
+        except Exception as e:
+            # ✅ Return A2A error response
+            error_msg = A2AMessage.error(
+                request=A2AMessage.from_dict(body) if body else None,
+                error_code=A2AErrorCode.INTERNAL_ERROR,
+                error_message=str(e),
+                status=A2AStatus.ERROR,
+            )
+            return error_msg.to_dict()
 
     return app
 
@@ -204,13 +285,37 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
     @app.post("/validate")
     def validate(body: Dict[str, Any]) -> Dict[str, Any]:
-        return agent.validate_guess(
-            guess=body.get("guess", []),
-            available_colors=body.get("available_colors", []),
-            expected_length=body.get("expected_length", 4),
-            previous_guesses=body.get("previous_guesses", []),
-            constraints=body.get("constraints", {}),
-        )
+        try:
+            # ✅ Parse incoming A2AMessage
+            request_msg = A2AMessage.from_dict(body)
+            payload = request_msg.payload
+
+            # Execute validation
+            result = agent.validate_guess(
+                proposed_guess=payload.get("proposed_guess", []),
+                guess_history=payload.get("guess_history", []),
+                analysis=payload.get("analysis", {}),
+                num_pegs=payload.get("num_pegs", 4),
+            )
+
+            # ✅ Create proper A2A response envelope
+            response_msg = A2AMessage.response(
+                request=request_msg,
+                payload=result,
+                status=A2AStatus.OK,
+                is_reply=True
+            )
+            return response_msg.to_dict()
+
+        except Exception as e:
+            # ✅ Return A2A error response
+            error_msg = A2AMessage.error(
+                request=A2AMessage.from_dict(body) if body else None,
+                error_code=A2AErrorCode.INTERNAL_ERROR,
+                error_message=str(e),
+                status=A2AStatus.ERROR,
+            )
+            return error_msg.to_dict()
 
     return app
 
@@ -218,27 +323,50 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 # ── Launch helpers ─────────────────────────────────────────────────────────────
 
 def _run_server(app: FastAPI, port: int) -> None:
+    """Run server."""
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="error")
+
+
+def _find_free_port(start_port: int = 8201, max_attempts: int = 100) -> int:
+    """Find a free port starting from start_port."""
+    import socket as sock_module
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            sock = sock_module.socket(sock_module.AF_INET, sock_module.SOCK_STREAM)
+            sock.bind(("0.0.0.0", port))
+            sock.close()
+            return port
+        except OSError:
+            continue
+    raise RuntimeError(f"Could not find free port in range {start_port}-{start_port + max_attempts}")
 
 
 def start_agent_servers(
     provider: str,
     registry_url: str,
-    base_port: int = 8101,
+    base_port: int = 8201,  # Boss-Worker uses 8200s (different from round-table 8100s)
 ) -> Dict[str, str]:
     """
     Start all 4 agent HTTP servers in daemon threads.
+    Dynamically allocates ports to avoid TIME_WAIT conflicts.
     Returns a dict mapping agent_type → URL.
     """
+    # Dynamically find free ports to avoid TIME_WAIT conflicts on rapid restarts
     configs = [
-        ("analyzer",   create_analyzer_app,   base_port),
-        ("strategist", create_strategist_app, base_port + 1),
-        ("proposer",   create_proposer_app,   base_port + 2),
-        ("validator",  create_validator_app,  base_port + 3),
+        ("analyzer",   create_analyzer_app),
+        ("strategist", create_strategist_app),
+        ("proposer",   create_proposer_app),
+        ("validator",  create_validator_app),
     ]
 
     urls = {}
-    for agent_type, factory_fn, port in configs:
+    current_port = base_port
+
+    for agent_type, factory_fn in configs:
+        # Find next available port
+        port = _find_free_port(current_port)
+        current_port = port + 1  # Next search starts after this port
+
         self_url = f"http://localhost:{port}"
         app = factory_fn(provider, registry_url, self_url)
         thread = threading.Thread(

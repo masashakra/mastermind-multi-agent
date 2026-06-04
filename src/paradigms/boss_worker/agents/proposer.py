@@ -1,169 +1,180 @@
 # Boss-Worker Proposer Agent
-# Fully autonomous LLM-based guess generation with strategic reasoning
+# Generates guesses based on strategy
+# Only receives from Boss, only replies to Boss
+
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from typing import List, Dict, Any, Optional
 from base.base_agent import BaseAgent
-from base.agent_card import PROPOSER_CARD
 from communication.protocol import A2ACommunicationLayer
 from base.role import AgentRole, ParadigmType
 
 AGENT_CARD = {
-    **PROPOSER_CARD,
     "agent_id": "proposer_boss_worker",
+    "agent_name": "Proposer",
+    "agent_type": "worker",
     "paradigm": "boss_worker",
+    "version": "1.0.0",
+    "description": "Proposer for Boss-Worker paradigm",
+    "url": "http://localhost:8104",
+    "health_endpoint": "/health",
+    "capabilities": {
+        "propose_guess": {
+            "description": "Propose a guess based on strategy",
+            "parameters": {"type": "object"},
+            "returns": {"type": "object"},
+        },
+    },
+    "constraints_owned": ["Guess generation"],
+    "team_members": ["boss"],
+    "can_communicate": False,
 }
 
 class ProposerAgent(BaseAgent):
-    """Boss-Worker Proposer Agent - Fully Autonomous
-
-    Generates guesses using intelligent reasoning and strategic thinking.
-    Maintains state of proposed guesses and learns from feedback.
-    Makes creative decisions about guess composition and positioning.
-    """
+    """Boss-Worker Proposer Agent"""
 
     def __init__(self, provider: str = "ollama", comm_layer: Optional[A2ACommunicationLayer] = None,
                  role: Optional[AgentRole] = None, paradigm: Optional[ParadigmType] = None,
-                 team_members: Optional[List[str]] = None, can_communicate: bool = True,
-                 constraints_owned: Optional[List[str]] = None):
+                 team_members: Optional[List[str]] = None, can_communicate: bool = False,
+                 constraints_owned: Optional[List[str]] = None, registry_url: Optional[str] = None):
         super().__init__(
             name="Proposer_BossWorker", provider=provider, comm_layer=comm_layer,
             role=role or AgentRole.PROPOSER, paradigm=paradigm or ParadigmType.BOSS_WORKER,
-            team_members=team_members or ["boss", "analyzer", "strategist", "validator"],
-            can_communicate=can_communicate, constraints_owned=constraints_owned or ["Constraint-respecting guess generation"],
+            team_members=team_members or ["boss"],
+            can_communicate=can_communicate, constraints_owned=constraints_owned or ["Guess generation"],
+            registry_url=registry_url,
         )
-        # State tracking - Proposer learns from previous proposals
-        self.proposed_guesses = []
-        self.accepted_guesses = []
-        self.rejected_guesses = []
-        self.proposal_history = []
 
-    def propose_guess(self, strategy: str, constraints_text: str, available_colors: List[str],
-                      num_pegs: int, previous_guesses: List[List[str]]) -> Dict[str, Any]:
-        """Generate a guess using intelligent LLM reasoning.
+    def propose_guess(
+        self,
+        guess_history: List[Dict],
+        available_colors: List[str],
+        difficulty: str,
+        strategy: Dict[str, Any],
+        analysis: Dict[str, Any],
+        num_pegs: int = 4,
+    ) -> Dict[str, Any]:
+        """Generate a guess based on strategy and analysis with constraint-driven reasoning."""
+        round_num = len(guess_history) + 1
 
-        The proposer uses its own judgment to:
-        - Interpret constraints creatively
-        - Consider strategic implications
-        - Maintain diversity in proposals
-        - Balance exploration vs. exploitation
-        """
-        role_context = self.get_role_system_prompt()
+        # Format previous guesses for context
+        prev_guesses = []
+        for g in guess_history:
+            prev_guesses.append({
+                "guess": g.get("guess", g),
+                "feedback": g.get("feedback", {})
+            })
 
-        colors_str = ", ".join(available_colors)
+        prev_str = "\n".join(
+            f"  Round {i+1}: {g['guess']} → pegs={g['feedback'].get('correct_pegs',0)}  pos={g['feedback'].get('correct_positions',0)}"
+            if isinstance(g, dict) else f"  {g}"
+            for i, g in enumerate(prev_guesses)
+        ) if prev_guesses else "  No guesses yet — this is round 1"
 
-        # Include previous guesses for context
-        prev_str = ""
-        if previous_guesses:
-            prev_str = "\n".join([f"  {i+1}. {g}" for i, g in enumerate(previous_guesses[-4:])])
-        else:
-            prev_str = "  [No previous guesses - first round]"
+        system_prompt = f"""You are the Proposer agent in a Mastermind game.
+Your role: propose the BEST next guess by STRICTLY respecting constraints and using strategy.
 
-        # Include proposal history for learning
-        proposal_summary = f"Generated {len(self.proposed_guesses)} proposals so far"
-        if self.accepted_guesses:
-            proposal_summary += f", {len(self.accepted_guesses)} accepted"
-        if self.rejected_guesses:
-            proposal_summary += f", {len(self.rejected_guesses)} rejected"
+CRITICAL RULES:
+- Secret code: exactly {num_pegs} color slots, colors CAN repeat
+- Available colors: {', '.join(available_colors)}
+- GUESS MUST HAVE EXACTLY {num_pegs} COLORS (no more, no less!)
+- NEVER repeat any previous guess
+- NEVER use impossible colors (marked as impossible in constraint analysis)
+- NEVER violate locked positions
+- ALWAYS reposition misplaced colors to different positions
+- Every color must either be: (A) tested, (B) locked, or (C) repositioned
 
-        # Full LLM-based proposal with strategic reasoning
-        prompt = f"""{role_context}
+CONSTRAINT-DRIVEN GUESS GENERATION:
+1. PARSE CONSTRAINTS STRICTLY:
+   - Extract EXACTLY which colors are impossible
+   - Extract EXACTLY which positions are locked with their colors
+   - Extract EXACTLY which colors must be repositioned
+   - CRITICAL: Identify colors that appear MULTIPLE TIMES in the secret (duplicates!)
 
-## YOUR TASK (Guess Proposal in Boss-Worker Paradigm)
-You are the Proposer. Your job is to generate a clever, strategic guess that respects constraints.
-Use your creativity and judgment to make the best possible next move.
+2. ELIMINATE OPTIONS:
+   - Remove all impossible colors from consideration
+   - For locked positions, fix those colors
+   - For confirmed-but-misplaced colors, pick different positions
+   - If a color must appear multiple times, plan all occurrences strategically
 
-CURRENT STRATEGY: {strategy}
+3. FILL REMAINING POSITIONS:
+   - Use strategy guidance (exploration vs refinement)
+   - If exploring: test untested colors AND test duplicate color placements
+   - If refining: test confirmed colors in NEW position combinations
+   - Generate DIVERSE guesses that try different position placements for duplicates
+   - ENSURE THE GUESS HAS EXACTLY {num_pegs} COLORS!
 
-CONSTRAINTS TO RESPECT:
-{constraints_text if constraints_text.strip() else "  [No hard constraints yet - all colors possible]"}
+4. STRICT VALIDATION BEFORE FINALIZING:
+   - Does every color in my guess respect constraints?
+   - Are locked positions exactly matched?
+   - Are misplaced colors in different positions?
+   - Is this guess DIFFERENT from all past guesses? (NEVER resubmit!)
+   - If colors repeat, did I test new position combinations?
+   - DOES MY GUESS HAVE EXACTLY {num_pegs} COLORS?
 
-AVAILABLE COLORS: {colors_str}
-NUMBER OF PEGS: {num_pegs}
+5. OUTPUT: Commit to the guess with detailed reasoning
 
-PREVIOUS GUESSES:
+You remember all previous guesses and reasoning via conversation history."""
+
+        strategy_guidance = f"""STRATEGY FROM STRATEGIST:
+- Phase: {strategy.get('phase', 'EXPLORATION')}
+- Strategy: {strategy.get('strategy', 'Test new colors')}
+- Reasoning: {strategy.get('reasoning', 'N/A')}
+- Confidence: {strategy.get('confidence', 0.5)}"""
+
+        analysis_summary = f"""CONSTRAINT ANALYSIS FROM ANALYZER:
+- Confirmed colors: {analysis.get('confirmed_colors', [])}
+- Impossible colors: {analysis.get('impossible_colors', [])}
+- Locked positions: {analysis.get('locked_positions', [])}
+- Misplaced colors: {analysis.get('misplaced_colors', [])}
+- Analysis: {analysis.get('analysis', 'None yet')}"""
+
+        user_message = f"""Round {round_num} — propose your next guess using systematic constraint reasoning.
+REMEMBER: Your guess MUST have EXACTLY {num_pegs} colors!
+
+{strategy_guidance}
+
+{analysis_summary}
+
+PRIOR GUESSES AND FEEDBACK:
 {prev_str}
 
-{proposal_summary}
-
-PROPOSAL STRATEGY - Think about:
-
-1. Constraint Satisfaction:
-   - What locked positions MUST you use?
-   - What impossible colors MUST you avoid?
-   - What misplaced colors should you reposition?
-
-2. Exploration vs. Exploitation:
-   - Should you explore new colors (early game)?
-   - Or refine positions of known colors (late game)?
-   - What does the strategy suggest?
-
-3. Diversity:
-   - Is this sufficiently different from previous guesses?
-   - Or is the new positioning justified by constraints?
-
-4. Strategic Reasoning:
-   - What information will this guess reveal?
-   - What questions does it answer?
-   - Is it risky or conservative - and is that appropriate?
-
-5. Confidence:
-   - How confident are you in this guess?
-   - Any doubts or alternative proposals?
-
-Think creatively about the color combinations and positions.
-Make smart decisions about what to test next.
+Now apply the 5-step constraint-driven process to generate the BEST next guess with {num_pegs} colors.
 
 OUTPUT (JSON ONLY):
 {{
-  "proposed_guess": ["color1", "color2", "color3", "color4"],
-  "reasoning": "Detailed explanation of why you chose this combination",
-  "strategy_alignment": "How this aligns with the stated strategy",
-  "expected_outcome": "What you expect to learn from this guess",
-  "confidence": 0.8,
-  "alternatives_considered": ["[color alternatives you thought about]"],
-  "risk_assessment": "Is this conservative, balanced, or risky?"
+  "guess": {['color' + str(i+1) for i in range(num_pegs)]},
+  "reasoning": "Detailed step-by-step reasoning following the 5-step process",
+  "constraints_followed": ["list of constraints this guess respects"],
+  "expected_outcome": "What this guess will teach us",
+  "confidence": 0.85
 }}"""
 
-        response = self.call_llm(prompt)
-        result = self.parse_json_response(response)
+        try:
+            response = self.call_llm_conversation(system_prompt, user_message)
+        except Exception as e:
+            print(f"[Proposer] ERROR: {type(e).__name__}: {e}")
+            return {"guess": available_colors[:4], "reasoning": "Error fallback", "confidence": 0.1}
 
-        # Fallback if LLM fails
-        if "error" in result or "proposed_guess" not in result:
-            result = {
-                "proposed_guess": available_colors[:num_pegs] if len(available_colors) >= num_pegs else available_colors + ["red"] * (num_pegs - len(available_colors)),
-                "reasoning": "LLM generation failed, using default",
-                "strategy_alignment": "Unknown",
-                "expected_outcome": "Gather baseline data",
-                "confidence": 0.2,
-                "alternatives_considered": [],
-                "risk_assessment": "Conservative (fallback)"
-            }
-
-        # Track proposal in state
-        proposal_record = {
-            "round": len(self.proposed_guesses) + 1,
-            "guess": result.get("proposed_guess", []),
-            "reasoning": result.get("reasoning", ""),
-            "confidence": result.get("confidence", 0.5),
-            "status": "proposed"
-        }
-        self.proposed_guesses.append(result.get("proposed_guess", []))
-        self.proposal_history.append(proposal_record)
+        try:
+            result = self.parse_json_response(response)
+            if "guess" not in result:
+                result["guess"] = available_colors[:4]
+        except Exception as e:
+            print(f"[Proposer] ERROR parsing response: {e}")
+            result = {"guess": available_colors[:4], "reasoning": "Parse error", "confidence": 0.1}
 
         return result
 
     def process(self, **kwargs) -> Dict[str, Any]:
-        """Process method required by BaseAgent abstract class.
-
-        Delegates to propose_guess for this agent.
-        """
+        """Process method required by BaseAgent."""
         return self.propose_guess(
-            strategy=kwargs.get("strategy", ""),
-            constraints_text=kwargs.get("constraints_text", ""),
+            guess_history=kwargs.get("guess_history", []),
             available_colors=kwargs.get("available_colors", []),
+            difficulty=kwargs.get("difficulty", "easy"),
+            strategy=kwargs.get("strategy", {}),
+            analysis=kwargs.get("analysis", {}),
             num_pegs=kwargs.get("num_pegs", 4),
-            previous_guesses=kwargs.get("previous_guesses", []),
         )

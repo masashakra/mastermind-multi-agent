@@ -1,425 +1,689 @@
-"""
-Boss Agent — LLM-powered coordinator for Boss-Worker paradigm.
+# Boss-Worker Boss Agent
+# Central orchestrator that delegates tasks and manages workflow
+# Only the Boss communicates across agents; workers only reply to Boss
 
-The Boss (with A2A standardization):
-  1. Searches registry for workers by agent_type → gets URLs
-  2. Sends HTTP A2A requests using standard A2AMessage envelopes
-  3. Implements retry logic and timeout handling
-  4. Uses LLM to interpret results and make decisions
-  5. Returns final guess to orchestrator
-"""
-
+from typing import List, Dict, Any, Optional
 import sys
-import json
-import time
-import uuid
 from pathlib import Path
-from typing import Dict, Any, List, Optional
-
+import asyncio
 import httpx
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from base.base_agent import BaseAgent
+from communication.a2a_message import A2AMessage, A2AStatus
 from base.role import AgentRole, ParadigmType
-from communication.a2a_message import A2AMessage, A2AStatus, A2AErrorCode
-from communication.a2a_contract import get_contract
 
 
-# ── Boss agent card ───────────────────────────────────────────────────────────
-
-BOSS_AGENT_CARD = {
+AGENT_CARD = {
     "agent_id": "boss_boss_worker",
     "agent_name": "Boss",
-    "agent_type": "boss",
+    "agent_type": "orchestrator",
     "paradigm": "boss_worker",
-    "description": (
-        "Central coordinator. Discovers workers via registry, "
-        "delegates to them over HTTP (A2A), then synthesises a final guess."
-    ),
+    "version": "1.0.0",
+    "description": "Boss agent that delegates tasks to workers in Boss-Worker paradigm",
+    "url": "http://localhost:8101",
+    "health_endpoint": "/health",
     "capabilities": {
-        "run_round": {
-            "description": "Coordinate one full game round via worker agents",
+        "delegate": {
+            "description": "Delegate analysis task to Analyzer",
             "parameters": {"type": "object"},
-        }
+            "returns": {"type": "object"},
+        },
+        "orchestrate": {
+            "description": "Orchestrate workflow",
+            "parameters": {"type": "object"},
+            "returns": {"type": "object"},
+        },
     },
+    "constraints_owned": ["Workflow orchestration"],
+    "team_members": ["analyzer", "strategist", "proposer", "validator"],
+    "can_communicate": True,
 }
 
 
-# ── Boss LLM Agent ────────────────────────────────────────────────────────────
-
 class BossAgent(BaseAgent):
-    """
-    LLM-powered Boss.
+    """Boss Agent - Central Orchestrator
 
-    Lifecycle per round
-    ──────────────────
-    1. plan_round()       → LLM decides what to do this round
-    2. discover(type)     → HTTP GET  registry → worker URL
-    3. call_worker(url)   → HTTP POST worker   → worker result
-    4. evaluate_round()   → LLM synthesises results → final decision
-    5. return guess
+    The Boss:
+    - Receives initial puzzle/feedback from main orchestrator
+    - Delegates analysis to Analyzer
+    - Receives Analyzer's constraints
+    - Delegates strategy to Strategist
+    - Delegates proposal to Proposer
+    - Delegates validation to Validator
+    - Returns final guess to orchestrator
+    - Controls ALL inter-agent communication
     """
 
     def __init__(
         self,
-        registry_url: str,
         provider: str = "ollama",
+        comm_layer: Optional[Any] = None,
+        registry_url: Optional[str] = None,
     ):
         super().__init__(
             name="Boss_BossWorker",
             provider=provider,
+            comm_layer=comm_layer,
             role=AgentRole.BOSS,
             paradigm=ParadigmType.BOSS_WORKER,
             team_members=["analyzer", "strategist", "proposer", "validator"],
             can_communicate=True,
-            constraints_owned=["Overall coordination", "Final guess decision"],
+            constraints_owned=["Workflow orchestration"],
+            registry_url=registry_url,
         )
-        self.registry_url = registry_url
-        self.http = httpx.Client(timeout=120.0)   # persistent sync client
-        self.round_logs: List[Dict[str, Any]] = []
+        self.worker_urls: Dict[str, str] = {}
 
-    # ── Registry discovery with error handling ───────────────────────────────
+    def set_worker_urls(self, worker_urls: Dict[str, str]) -> None:
+        """Set URLs for all worker agents."""
+        self.worker_urls = worker_urls
 
-    def discover_worker(self, agent_type: str, retries: int = 3) -> str:
-        """Query registry for worker URL by type. Retries on failure."""
-        for attempt in range(retries):
-            try:
-                resp = self.http.get(
-                    f"{self.registry_url}/agents/type/{agent_type}",
-                    timeout=10.0,
-                )
-                resp.raise_for_status()
-                data = resp.json()
+    def discover_worker_urls(self) -> Dict[str, str]:
+        """Discover worker URLs from the registry by querying for agent names.
 
-                # Response is wrapped in A2AMessage
-                if "payload" in data:
-                    agents = data["payload"].get("agents", [])
-                else:
-                    agents = data  # Fallback to raw response
+        Returns a dict mapping agent_name (analyzer, strategist, etc.) to their URL.
+        """
+        worker_urls = {}
 
-                if agents:
-                    url = agents[0].get("url")
-                    print(f"[Boss] Discovered {agent_type} @ {url}")
-                    return url
+        if not self.registry_url:
+            return worker_urls
 
-            except Exception as e:
-                print(f"[Boss] Discovery attempt {attempt+1}/{retries} failed: {e}")
-                if attempt < retries - 1:
-                    time.sleep(0.5)
+        try:
+            resp = httpx.get(f"{self.registry_url}/agents", timeout=5.0)
+            if resp.status_code != 200:
+                return worker_urls
 
-        raise RuntimeError(f"[Boss] Could not discover {agent_type} after {retries} attempts")
+            data = resp.json()
+            agents_list = data.get("payload", {}).get("agents", [])
 
-    # ── A2A HTTP calls with standard envelope + error handling ────────────────
+            for agent_data in agents_list:
+                paradigm = agent_data.get("paradigm", "")
 
-    def call_worker(
+                # Only get agents from boss_worker paradigm
+                if paradigm != "boss_worker":
+                    continue
+
+                agent_name = agent_data.get("agent_name", "").lower()
+                agent_url = agent_data.get("url", "")
+
+                if agent_name and agent_url:
+                    worker_urls[agent_name] = agent_url
+
+            self.worker_urls = worker_urls
+            return worker_urls
+        except Exception as e:
+            print(f"[Boss] Error discovering workers from registry: {e}")
+            return worker_urls
+
+    def get_available_agents(self) -> Dict[str, Dict[str, Any]]:
+        """Get descriptions of available agents from registry for decision-making.
+
+        Returns a dict of agent info that the LLM can use to understand
+        what capabilities are available.
+        """
+        import httpx
+
+        agents_info = {}
+
+        if not self.registry_url:
+            return agents_info
+
+        try:
+            resp = httpx.get(f"{self.registry_url}/agents", timeout=5.0)
+            if resp.status_code != 200:
+                return agents_info
+
+            data = resp.json()
+            agents_list = data.get("payload", {}).get("agents", [])
+
+            for agent_data in agents_list:
+                paradigm = agent_data.get("paradigm", "")
+
+                if paradigm != "boss_worker":
+                    continue
+
+                agent_id = agent_data.get("agent_id", "")
+                agent_name = agent_data.get("agent_name", "Unknown").lower()
+                description = agent_data.get("description", "")
+                capabilities = agent_data.get("capabilities", {})
+
+                agents_info[agent_name] = {
+                    "id": agent_id,
+                    "description": description,
+                    "capabilities": list(capabilities.keys()),
+                }
+
+            return agents_info
+        except Exception:
+            return agents_info
+
+    async def delegate_to_analyzer(
         self,
-        url: str,
-        endpoint: str,
-        payload: Dict[str, Any],
-        retries: int = 2,
+        last_guess: List[str],
+        feedback: Dict[str, int],
+        guess_history: List[Dict],
+        available_colors: List[str],
+        difficulty: str,
+        num_pegs: int,
     ) -> Dict[str, Any]:
-        """
-        Send A2A HTTP POST to worker.
-        Uses A2AMessage envelope, handles errors, retries on failure.
-        """
-        msg_id = str(uuid.uuid4())[:8]
+        """Delegate analysis task to Analyzer."""
+        # ✅ Discover worker URLs from registry if not already done
+        if not self.worker_urls:
+            self.discover_worker_urls()
 
-        # Get contract timeout
-        agent_type = endpoint  # endpoint name matches agent capability
-        contract = get_contract(agent_type, endpoint)
-        timeout = contract.get("timeout", 30) if contract else 30
+        analyzer_url = self.worker_urls.get("analyzer")
+        if not analyzer_url:
+            raise RuntimeError("Analyzer URL not found in registry")
 
-        for attempt in range(retries):
-            try:
-                print(f"[Boss→A2A] POST {url}/{endpoint} (msg_id={msg_id}, attempt {attempt+1})")
+        msg = A2AMessage.request(
+            sender_id="boss_boss_worker",
+            receiver_id="analyzer_boss_worker",
+            action="analyze",
+            payload={
+                "last_guess": last_guess,
+                "feedback": feedback,
+                "guess_history": guess_history,
+                "available_colors": available_colors,
+                "difficulty": difficulty,
+                "num_pegs": num_pegs,
+            }
+        )
 
-                # Create A2A request message
-                request_msg = A2AMessage.request(
-                    sender_id="boss_boss_worker",
-                    receiver_id=f"{agent_type}_boss_worker",
-                    action=endpoint,
-                    payload=payload,
-                )
-
-                # Send HTTP POST with A2A envelope
-                resp = self.http.post(
-                    f"{url}/{endpoint}",
-                    json=request_msg.to_dict(),
-                    timeout=float(timeout),
-                )
-
-                # Parse response
-                if resp.status_code == 200:
-                    response_data = resp.json()
-
-                    # If wrapped in A2AMessage envelope
-                    if isinstance(response_data, dict) and "message_id" in response_data:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for attempt in range(3):
+                try:
+                    resp = await client.post(
+                        f"{analyzer_url}/analyze",
+                        json=msg.to_dict(),
+                        timeout=300.0
+                    )
+                    if resp.status_code == 200:
+                        # ✅ Parse A2A response envelope
+                        response_data = resp.json()
                         response_msg = A2AMessage.from_dict(response_data)
+
                         if response_msg.status == A2AStatus.OK:
-                            result = response_msg.payload
-                            print(f"[Boss←A2A] {endpoint} ✓ (msg_id={msg_id})")
-                            return result
+                            print(f"[Boss] ✓ Analyzer analysis received (msg_id: {response_msg.message_id}, trace: {response_msg.response_to})")
+                            return response_msg.payload
                         else:
-                            error = response_msg.error_message or "Unknown error"
-                            print(f"[Boss←A2A] {endpoint} ERROR: {error}")
-                            if attempt < retries - 1:
-                                time.sleep(0.5)
-                            continue
+                            print(f"[Boss] ! Analyzer error: {response_msg.error_code} - {response_msg.error_message}")
+                            if attempt < 2:
+                                wait = 10 * (attempt + 1)
+                                print(f"[Boss] Retrying in {wait}s...")
+                                await asyncio.sleep(wait)
                     else:
-                        # Fallback: unwrapped response
-                        print(f"[Boss←A2A] {endpoint} ✓ (msg_id={msg_id})")
-                        return response_data
+                        print(f"[Boss] ! Analyzer returned {resp.status_code}")
+                except Exception as e:
+                    if attempt < 2:
+                        wait = 10 * (attempt + 1)
+                        print(f"[Boss] Error calling Analyzer (attempt {attempt+1}/3), retrying in {wait}s: {e}")
+                        await asyncio.sleep(wait)
+                    else:
+                        print(f"[Boss] Error calling Analyzer after 3 attempts: {e}")
+                        raise
 
-                elif resp.status_code == 408:
-                    print(f"[Boss←A2A] {endpoint} TIMEOUT (attempt {attempt+1})")
-                    if attempt < retries - 1:
-                        time.sleep(1)
-                    continue
-                else:
-                    error_msg = resp.text or f"HTTP {resp.status_code}"
-                    print(f"[Boss←A2A] {endpoint} HTTP {resp.status_code}: {error_msg}")
-                    if attempt < retries - 1:
-                        time.sleep(0.5)
-                    continue
+        return {}
 
-            except httpx.TimeoutException:
-                print(f"[Boss] Timeout calling {endpoint} (attempt {attempt+1})")
-                if attempt < retries - 1:
-                    time.sleep(1)
-                continue
-            except Exception as e:
-                print(f"[Boss] Error calling {endpoint}: {e} (attempt {attempt+1})")
-                if attempt < retries - 1:
-                    time.sleep(0.5)
-                continue
+    async def delegate_to_strategist(
+        self,
+        guess_history: List[Dict],
+        difficulty: str,
+        analysis: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Delegate strategy task to Strategist."""
+        # ✅ Discover worker URLs from registry if not already done
+        if not self.worker_urls:
+            self.discover_worker_urls()
 
-        raise RuntimeError(
-            f"[Boss] Failed to call {endpoint} after {retries} attempts"
+        strategist_url = self.worker_urls.get("strategist")
+        if not strategist_url:
+            raise RuntimeError("Strategist URL not found in registry")
+
+        msg = A2AMessage.request(
+            sender_id="boss_boss_worker",
+            receiver_id="strategist_boss_worker",
+            action="propose_strategy",
+            payload={
+                "guess_history": guess_history,
+                "difficulty": difficulty,
+                "analysis": analysis.get("analysis", ""),
+                "impossible_colors": analysis.get("impossible_colors", []),
+                "locked_positions": analysis.get("locked_positions", []),
+                "misplaced_colors": analysis.get("misplaced_colors", []),
+            }
         )
 
-    # ── LLM coordination ──────────────────────────────────────────────────────
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for attempt in range(3):
+                try:
+                    resp = await client.post(
+                        f"{strategist_url}/propose_strategy",
+                        json=msg.to_dict(),
+                        timeout=300.0
+                    )
+                    if resp.status_code == 200:
+                        # ✅ Parse A2A response envelope
+                        response_data = resp.json()
+                        response_msg = A2AMessage.from_dict(response_data)
 
-    def plan_round(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
-        """Use LLM to plan the upcoming round given current game state."""
-        role_ctx = self.get_role_system_prompt()
-        history_summary = ""
-        for h in game_state.get("guess_history", [])[-3:]:
-            fb = h.get("feedback", {})
-            history_summary += (
-                f"\n  Round {h['round']}: {h['guess']} "
-                f"→ {fb.get('correct_pegs',0)} pegs, {fb.get('correct_positions',0)} positions"
-            )
-        if not history_summary:
-            history_summary = "\n  [First round — no history yet]"
+                        if response_msg.status == A2AStatus.OK:
+                            print(f"[Boss] ✓ Strategist strategy received (msg_id: {response_msg.message_id})")
+                            return response_msg.payload
+                        else:
+                            print(f"[Boss] ! Strategist error: {response_msg.error_code} - {response_msg.error_message}")
+                            if attempt < 2:
+                                await asyncio.sleep(10 * (attempt + 1))
+                except Exception as e:
+                    if attempt < 2:
+                        await asyncio.sleep(10 * (attempt + 1))
 
-        prompt = f"""{role_ctx}
+        return {}
 
-## YOUR TASK — Round Planning (Boss-Worker Paradigm)
-You are the Boss. Before calling your workers you must plan this round.
-
-GAME STATE:
-- Round: {game_state['round_number']} / 8
-- Difficulty: {game_state['difficulty']}
-- Available colours: {game_state['available_colors']}
-- Pegs: {game_state['pegs']}
-
-GUESS HISTORY:{history_summary}
-
-WORKERS AVAILABLE: analyzer, strategist, proposer, validator
-You will call them in that order via HTTP.
-
-Plan this round: what is the priority? What constraints matter most?
-What should each worker focus on?
-
-OUTPUT (JSON ONLY):
-{{
-  "round_priority": "Find new colors | Lock positions | Confirm solution",
-  "guidance": {{
-    "for_analyzer":   "What to look for",
-    "for_strategist": "What phase / risk level",
-    "for_proposer":   "What to try",
-    "for_validator":  "What to be strict about"
-  }},
-  "boss_confidence": 0.7,
-  "reasoning": "Why this plan"
-}}"""
-
-        resp = self.call_llm(prompt)
-        plan = self.parse_json_response(resp)
-        if "error" in plan:
-            plan = {
-                "round_priority": "Explore",
-                "guidance": {
-                    "for_analyzer": "Extract all constraints",
-                    "for_strategist": "Exploration phase",
-                    "for_proposer": "Try diverse colours",
-                    "for_validator": "Check all constraints",
-                },
-                "boss_confidence": 0.4,
-                "reasoning": "LLM plan failed — using fallback",
-            }
-        return plan
-
-    def evaluate_round(
+    async def delegate_to_proposer(
         self,
-        plan: Dict[str, Any],
-        analysis: Dict[str, Any],
+        guess_history: List[Dict],
+        available_colors: List[str],
+        difficulty: str,
         strategy: Dict[str, Any],
-        proposal: Dict[str, Any],
-        validation: Dict[str, Any],
+        analysis: Dict[str, Any],
+        num_pegs: int = 4,
     ) -> Dict[str, Any]:
-        """Use LLM to synthesise worker outputs and make the final call."""
-        role_ctx = self.get_role_system_prompt()
+        """Delegate proposal task to Proposer."""
+        # ✅ Discover worker URLs from registry if not already done
+        if not self.worker_urls:
+            self.discover_worker_urls()
 
-        prompt = f"""{role_ctx}
+        proposer_url = self.worker_urls.get("proposer")
+        if not proposer_url:
+            raise RuntimeError("Proposer URL not found in registry")
 
-## YOUR TASK — Round Evaluation (Boss-Worker Paradigm)
-You are the Boss. Your workers have responded. Make the final decision.
-
-ROUND PLAN: {json.dumps(plan, indent=2)}
-
-ANALYZER SAID:
-  Analysis: {analysis.get('analysis', '—')}
-  Constraints: {analysis.get('constraints', [])}
-  Confidence: {analysis.get('confidence', '—')}
-
-STRATEGIST SAID:
-  Phase: {strategy.get('phase', '—')}
-  Strategy: {strategy.get('strategy', '—')}
-
-PROPOSER SAID:
-  Proposed guess: {proposal.get('proposed_guess', [])}
-  Reasoning: {proposal.get('reasoning', '—')}
-
-VALIDATOR SAID:
-  Valid: {validation.get('valid', '—')}
-  Violations: {validation.get('hard_violations', [])}
-  Warnings: {validation.get('soft_warnings', [])}
-  Strategic assessment: {validation.get('strategic_assessment', '—')}
-
-As Boss, decide:
-- Do you ACCEPT the validator's decision or OVERRIDE it?
-- Is the proposed guess your final answer?
-- Any final adjustments?
-
-OUTPUT (JSON ONLY):
-{{
-  "final_decision": "ACCEPT | OVERRIDE",
-  "submit_guess": true,
-  "final_guess": {proposal.get('proposed_guess', [])},
-  "override_reason": "Only if overriding",
-  "boss_assessment": "Brief summary of this round",
-  "confidence": 0.8
-}}"""
-
-        resp = self.call_llm(prompt)
-        decision = self.parse_json_response(resp)
-        if "error" in decision:
-            decision = {
-                "final_decision": "ACCEPT",
-                "submit_guess": validation.get("valid", True),
-                "final_guess": proposal.get("proposed_guess", []),
-                "override_reason": "",
-                "boss_assessment": "LLM evaluation failed — accepting validator",
-                "confidence": 0.3,
+        msg = A2AMessage.request(
+            sender_id="boss_boss_worker",
+            receiver_id="proposer_boss_worker",
+            action="propose_guess",
+            payload={
+                "guess_history": guess_history,
+                "available_colors": available_colors,
+                "difficulty": difficulty,
+                "strategy": strategy,
+                "analysis": analysis,
+                "num_pegs": num_pegs,
             }
-        return decision
+        )
 
-    # ── Main round runner ─────────────────────────────────────────────────────
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for attempt in range(3):
+                try:
+                    resp = await client.post(
+                        f"{proposer_url}/propose_guess",
+                        json=msg.to_dict(),
+                        timeout=300.0
+                    )
+                    if resp.status_code == 200:
+                        # ✅ Parse A2A response envelope
+                        response_data = resp.json()
+                        response_msg = A2AMessage.from_dict(response_data)
+
+                        if response_msg.status == A2AStatus.OK:
+                            print(f"[Boss] ✓ Proposer guess received (msg_id: {response_msg.message_id})")
+                            return response_msg.payload
+                        else:
+                            print(f"[Boss] ! Proposer error: {response_msg.error_code} - {response_msg.error_message}")
+                            if attempt < 2:
+                                await asyncio.sleep(10 * (attempt + 1))
+                except Exception as e:
+                    if attempt < 2:
+                        await asyncio.sleep(10 * (attempt + 1))
+
+        return {}
+
+    async def delegate_to_validator(
+        self,
+        proposed_guess: List[str],
+        guess_history: List[Dict],
+        analysis: Dict[str, Any],
+        num_pegs: int = 4,
+    ) -> Dict[str, Any]:
+        """Delegate validation task to Validator."""
+        # ✅ Discover worker URLs from registry if not already done
+        if not self.worker_urls:
+            self.discover_worker_urls()
+
+        validator_url = self.worker_urls.get("validator")
+        if not validator_url:
+            raise RuntimeError("Validator URL not found in registry")
+
+        msg = A2AMessage.request(
+            sender_id="boss_boss_worker",
+            receiver_id="validator_boss_worker",
+            action="validate",
+            payload={
+                "proposed_guess": proposed_guess,
+                "guess_history": guess_history,
+                "analysis": analysis,
+                "num_pegs": num_pegs,
+            }
+        )
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for attempt in range(3):
+                try:
+                    resp = await client.post(
+                        f"{validator_url}/validate",
+                        json=msg.to_dict(),
+                        timeout=300.0
+                    )
+                    if resp.status_code == 200:
+                        # ✅ Parse A2A response envelope
+                        response_data = resp.json()
+                        response_msg = A2AMessage.from_dict(response_data)
+
+                        if response_msg.status == A2AStatus.OK:
+                            print(f"[Boss] ✓ Validator validation received (msg_id: {response_msg.message_id})")
+                            return response_msg.payload
+                        else:
+                            print(f"[Boss] ! Validator error: {response_msg.error_code} - {response_msg.error_message}")
+                            if attempt < 2:
+                                await asyncio.sleep(10 * (attempt + 1))
+                except Exception as e:
+                    if attempt < 2:
+                        await asyncio.sleep(10 * (attempt + 1))
+
+        return {}
+
+    async def decide_next_action(
+        self,
+        game_state: Dict[str, Any],
+        current_results: Dict[str, Any],
+        iteration: int,
+    ) -> Dict[str, Any]:
+        """Use LLM to autonomously decide which agent to contact next.
+
+        The Boss reasons about the current game state and results,
+        then decides intelligently which agent is needed next.
+        """
+        system_prompt = """You are an autonomous Boss agent in a Mastermind game.
+Your role: Analyze the current game state and decide which agent to contact next.
+
+Available agents:
+- Analyzer: Extracts constraints from feedback
+- Strategist: Decides strategy based on constraints
+- Proposer: Generates guesses using strategy
+- Validator: Validates guesses before submission
+
+DECISION FRAMEWORK:
+1. No feedback yet? → Contact Analyzer (even if empty, to process initial state)
+2. Have feedback but no analysis? → Contact Analyzer
+3. Have analysis but no strategy? → Contact Strategist
+4. Have strategy but no proposal? → Contact Proposer
+5. Have proposal but no validation? → Contact Validator
+6. Have validation with issues? → Re-contact Strategist or Proposer to fix
+7. Have validation passed? → Return "done" to submit and move to next round
+8. Stuck in loop? → Contact a different agent to break the pattern
+
+RE-CONTACT RULES (you CAN re-contact agents):
+- Re-contact Analyzer if new feedback contradicts previous analysis
+- Re-contact Strategist if validation rejects the guess (strategy needs revision)
+- Re-contact Proposer if validation failed or strategy changed
+- Re-contact Validator ONLY if the proposal changed (don't re-validate same guess)
+- Only return "done" when: validation passed AND you're ready to submit
+
+DECISION OUTPUT (JSON ONLY):
+{
+  "next_agent": "analyzer|strategist|proposer|validator|done",
+  "reason": "Detailed reasoning for this decision",
+  "confidence": 0.95,
+  "alternative_if_fails": "fallback agent if current fails"
+}"""
+
+        available = {
+            "analysis": "analysis" in current_results,
+            "strategy": "strategy" in current_results,
+            "proposal": "proposal" in current_results,
+            "validation": "validation" in current_results,
+        }
+
+        # Get available agents from registry
+        agents_info = self.get_available_agents()
+        agents_desc = ""
+        if agents_info:
+            agents_desc = "\n\nAvailable Agents (from registry):\n"
+            for agent_name, info in agents_info.items():
+                agents_desc += f"- {agent_name}: {info['description']}\n"
+                agents_desc += f"  Capabilities: {', '.join(info['capabilities'])}\n"
+
+        game_summary = f"""Current Game State (Round {len(game_state.get('guess_history', [])) + 1}, Iteration {iteration}):
+- Last feedback: {game_state.get('last_feedback', {})}
+- Available results: {available}
+- Analysis: {current_results.get('analysis', {}).get('analysis', '')[:100]}{'...' if len(str(current_results.get('analysis', {}).get('analysis', ''))) > 100 else ''}
+- Strategy: {current_results.get('strategy', {}).get('strategy', '')[:100]}{'...' if len(str(current_results.get('strategy', {}).get('strategy', ''))) > 100 else ''}
+- Proposal: {current_results.get('proposal', {}).get('guess', 'none')}
+- Validation: {current_results.get('validation', {}).get('is_valid', 'not checked')}{agents_desc}
+
+What should we do next?"""
+
+        try:
+            response = self.call_llm_conversation(system_prompt, game_summary)
+            decision = self.parse_json_response(response)
+            return decision
+        except Exception as e:
+            print(f"[Boss] Decision-making error: {e}")
+            # Fallback to standard sequence if LLM fails
+            return self._get_default_next_action(current_results)
+
+    def _get_default_next_action(self, current_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Default decision sequence when LLM decision fails."""
+        # Sequential order: analyzer → strategist → proposer → validator → done
+        if "analysis" not in current_results:
+            return {"next_agent": "analyzer", "reason": "Need analysis", "confidence": 1.0}
+        elif "strategy" not in current_results:
+            return {"next_agent": "strategist", "reason": "Need strategy", "confidence": 1.0}
+        elif "proposal" not in current_results:
+            return {"next_agent": "proposer", "reason": "Need proposal", "confidence": 1.0}
+        elif "validation" not in current_results:
+            return {"next_agent": "validator", "reason": "Need validation", "confidence": 1.0}
+        else:
+            return {"next_agent": "done", "reason": "All results available, ready to submit", "confidence": 1.0}
+
+    async def orchestrate_round(
+        self,
+        last_guess: List[str],
+        feedback: Dict[str, int],
+        guess_history: List[Dict],
+        available_colors: List[str],
+        difficulty: str,
+        num_pegs: int,
+    ) -> Dict[str, Any]:
+        """Autonomously orchestrate one complete round of the game.
+
+        The Boss uses reasoning to decide which agent to contact next,
+        in what order, and when to stop.
+        """
+        print(f"[Boss] 🧠 Starting autonomous round orchestration...")
+
+        game_state = {
+            "round": len(guess_history) + 1,
+            "last_guess": last_guess,
+            "last_feedback": feedback,
+            "guess_history": guess_history,
+            "available_colors": available_colors,
+            "difficulty": difficulty,
+            "num_pegs": num_pegs,
+        }
+
+        current_results = {}
+        max_iterations = 10  # Safety limit to prevent infinite loops
+
+        for iteration in range(max_iterations):
+            # Autonomously decide which agent to contact
+            decision = await self.decide_next_action(game_state, current_results, iteration + 1)
+            next_agent = decision.get("next_agent")
+            confidence = decision.get("confidence", 0.8)
+
+            print(f"[Boss] 🤔 Decision (iteration {iteration + 1}): Contact {next_agent} (confidence: {confidence:.2f})")
+            print(f"[Boss]    Reason: {decision.get('reason', 'N/A')}")
+
+            if next_agent == "analyzer":
+                print(f"[Boss] → Delegating to Analyzer")
+                current_results["analysis"] = await self.delegate_to_analyzer(
+                    last_guess, feedback, guess_history, available_colors, difficulty, num_pegs
+                )
+
+            elif next_agent == "strategist":
+                print(f"[Boss] → Delegating to Strategist")
+                current_results["strategy"] = await self.delegate_to_strategist(
+                    guess_history, difficulty, current_results.get("analysis", {})
+                )
+
+            elif next_agent == "proposer":
+                print(f"[Boss] → Delegating to Proposer")
+                current_results["proposal"] = await self.delegate_to_proposer(
+                    guess_history, available_colors, difficulty,
+                    current_results.get("strategy", {}),
+                    current_results.get("analysis", {}),
+                    num_pegs
+                )
+
+            elif next_agent == "validator":
+                print(f"[Boss] → Delegating to Validator")
+                current_results["validation"] = await self.delegate_to_validator(
+                    current_results.get("proposal", {}).get("guess", []),
+                    guess_history,
+                    current_results.get("analysis", {}),
+                    num_pegs
+                )
+
+            elif next_agent == "done":
+                print(f"[Boss] ✓ Round orchestration complete")
+                break
+
+            else:
+                print(f"[Boss] ⚠️  Unknown agent: {next_agent}, continuing...")
+                continue
+
+        if iteration + 1 >= max_iterations:
+            print(f"[Boss] ⚠️  Reached max iterations ({max_iterations}), completing round")
+        return {
+            "analysis": current_results.get("analysis"),
+            "strategy": current_results.get("strategy"),
+            "proposal": current_results.get("proposal"),
+            "validation": current_results.get("validation"),
+            "guess": current_results.get("validation", {}).get("proposed_guess",
+                    current_results.get("proposal", {}).get("guess", [])),
+            "decision_history": decision,
+        }
 
     def run_round(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
+        """Synchronous wrapper for orchestrate_round called by LangGraph.
+
+        Converts sync call to async orchestration.
         """
-        Full round coordination:
-          plan → [discover+call analyzer] → [discover+call strategist]
-               → [discover+call proposer] → [discover+call validator]
-               → evaluate → return
+        print(f"[Boss] run_round called for round {game_state.get('round_number', 1)}")
+        try:
+            # Discover worker URLs from registry
+            if not self.worker_urls:
+                self.worker_urls = self.discover_workers()
+                print(f"[Boss] Discovered workers: {list(self.worker_urls.keys())}")
+
+            result = asyncio.run(self.orchestrate_round(
+                last_guess=game_state.get("last_guess", []),
+                feedback=game_state.get("last_feedback", {"correct_pegs": 0, "correct_positions": 0}),
+                guess_history=game_state.get("guess_history", []),
+                available_colors=game_state.get("available_colors", []),
+                difficulty=game_state.get("difficulty", "easy"),
+                num_pegs=game_state.get("pegs", 4),
+            ))
+
+            return {
+                "submit": True,
+                "guess": result.get("guess", []),
+                "analysis": result.get("analysis"),
+                "strategy": result.get("strategy"),
+                "proposal": result.get("proposal"),
+                "validation": result.get("validation"),
+            }
+        except Exception as e:
+            print(f"[Boss] ERROR in run_round: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "submit": False,
+                "guess": [],
+                "error": str(e),
+            }
+
+    def discover_workers(self) -> Dict[str, str]:
+        """Dynamically discover worker URLs and capabilities from registry.
+
+        Queries the registry for all agents with capabilities matching the
+        boss-worker paradigm, then maps agent names to their URLs based on
+        their agent cards (not hardcoded).
         """
-        round_num = game_state.get("round_number", 1)
-        print(f"\n[Boss] ── Starting Round {round_num} coordination ──")
+        import httpx
 
-        # 1. Plan the round with LLM
-        plan = self.plan_round(game_state)
-        print(f"[Boss] Plan: {plan.get('round_priority')}")
+        if not self.registry_url:
+            print("[Boss] ⚠️  No registry URL configured, using fallback")
+            return {
+                "analyzer": "http://localhost:8201",
+                "strategist": "http://localhost:8202",
+                "proposer": "http://localhost:8203",
+                "validator": "http://localhost:8204",
+            }
 
-        # 2. Analyzer — discover URL then call via HTTP
-        analyzer_url = self.discover_worker("analyzer")
-        analysis = self.call_worker(analyzer_url, "analyze", {
-            "last_guess":        game_state.get("last_guess", []),
-            "feedback":          game_state.get("last_feedback", {}),
-            "previous_guesses":  game_state.get("guess_history", []),
-        })
-        print(f"[Boss] Analyzer → confidence={analysis.get('confidence','?')}")
+        try:
+            # Query registry for all agents in boss-worker paradigm
+            resp = httpx.get(f"{self.registry_url}/agents", timeout=5.0)
+            if resp.status_code != 200:
+                raise Exception(f"Registry returned {resp.status_code}")
 
-        # 3. Strategist — discover URL then call via HTTP
-        strategist_url = self.discover_worker("strategist")
-        strategy = self.call_worker(strategist_url, "strategy", {
-            "guess_history": game_state.get("guess_history", []),
-            "difficulty":    game_state.get("difficulty", "easy"),
-        })
-        print(f"[Boss] Strategist → phase={strategy.get('phase','?')}")
+            data = resp.json()
+            # Registry returns wrapped response: {payload: {agents: [...]}}
+            agents_list = data.get("payload", {}).get("agents", [])
+            worker_urls = {}
 
-        # 4. Proposer — discover URL then call via HTTP
-        proposer_url = self.discover_worker("proposer")
-        constraints_text = "\n".join(analysis.get("constraints", []))
-        proposal = self.call_worker(proposer_url, "propose", {
-            "strategy":        strategy.get("strategy", ""),
-            "constraints_text": constraints_text,
-            "available_colors": game_state.get("available_colors", []),
-            "num_pegs":        game_state.get("pegs", 4),
-            "previous_guesses": [g["guess"] for g in game_state.get("guess_history", [])],
-        })
-        print(f"[Boss] Proposer → {proposal.get('proposed_guess','?')}")
+            # Map agents by their capabilities and agent card info
+            for agent_info in agents_list:
+                # agent_info is the full agent data from registry
+                paradigm = agent_info.get("paradigm", "")
+                agent_name = agent_info.get("agent_name", "").lower()
+                url = agent_info.get("url", "")
 
-        # 5. Validator — discover URL then call via HTTP
-        validator_url = self.discover_worker("validator")
-        validation = self.call_worker(validator_url, "validate", {
-            "guess":            proposal.get("proposed_guess", []),
-            "available_colors": game_state.get("available_colors", []),
-            "expected_length":  game_state.get("pegs", 4),
-            "previous_guesses": [g["guess"] for g in game_state.get("guess_history", [])],
-            "constraints": {
-                "correct_positions":             analysis.get("correct_positions", []),
-                "correct_colors_wrong_position": analysis.get("correct_colors_wrong_position", []),
-                "impossible_colors":             analysis.get("impossible_colors", []),
-            },
-        })
-        print(f"[Boss] Validator → valid={validation.get('valid','?')}")
+                # Only include boss-worker paradigm agents
+                if paradigm != "boss_worker" or not url:
+                    continue
 
-        # 6. Boss evaluates all outputs and makes final decision
-        decision = self.evaluate_round(plan, analysis, strategy, proposal, validation)
-        print(f"[Boss] Decision → {decision.get('final_decision')} | submit={decision.get('submit_guess')}")
+                # Map by agent name (Analyzer, Strategist, Proposer, Validator)
+                if "analyzer" in agent_name.lower():
+                    worker_urls["analyzer"] = url
+                elif "strategist" in agent_name.lower():
+                    worker_urls["strategist"] = url
+                elif "proposer" in agent_name.lower():
+                    worker_urls["proposer"] = url
+                elif "validator" in agent_name.lower():
+                    worker_urls["validator"] = url
 
-        # Log the full round
-        round_record = {
-            "round": round_num,
-            "plan":       plan,
-            "analysis":   analysis,
-            "strategy":   strategy,
-            "proposal":   proposal,
-            "validation": validation,
-            "decision":   decision,
-        }
-        self.round_logs.append(round_record)
+            if worker_urls:
+                print(f"[Boss] Discovered {len(worker_urls)} workers from registry")
+                return worker_urls
+            else:
+                print("[Boss] ⚠️  No boss-worker agents found in registry, using fallback")
+                raise Exception("No agents found")
 
-        return {
-            "guess":           decision.get("final_guess", proposal.get("proposed_guess", [])),
-            "submit":          decision.get("submit_guess", validation.get("valid", True)),
-            "analysis":        analysis,
-            "strategy":        strategy,
-            "proposal":        proposal,
-            "validation":      validation,
-            "boss_decision":   decision,
-            "round_log":       round_record,
-        }
-
-    def close(self) -> None:
-        """Close the persistent HTTP client."""
-        self.http.close()
+        except Exception as e:
+            print(f"[Boss] ⚠️  Registry discovery failed: {e}, using fallback URLs")
+            # Fallback to hardcoded URLs if registry unavailable
+            return {
+                "analyzer": "http://localhost:8201",
+                "strategist": "http://localhost:8202",
+                "proposer": "http://localhost:8203",
+                "validator": "http://localhost:8204",
+            }
 
     def process(self, **kwargs) -> Dict[str, Any]:
-        """Process method required by BaseAgent abstract class.
-
-        Delegates to run_round for this agent.
-        """
+        """Process method required by BaseAgent."""
         return self.run_round(kwargs)
+
+    def close(self) -> None:
+        """Close any resources (stub for compatibility)."""
+        pass
