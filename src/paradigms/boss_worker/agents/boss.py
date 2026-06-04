@@ -190,6 +190,16 @@ class BossAgent(BaseAgent):
             }
         )
 
+        # Log outgoing message
+        from communication.message_logger import get_message_logger
+        _logger = get_message_logger()
+        _logger.log_a2a_send(
+            agent_name="Boss", message_id=msg.message_id,
+            sender_id=msg.sender_id, receiver_id=msg.receiver_id,
+            action="analyze", payload=msg.payload,
+            is_question=True, expects_reply=True,
+        )
+
         async with httpx.AsyncClient(timeout=300.0) as client:
             for attempt in range(3):
                 try:
@@ -205,6 +215,12 @@ class BossAgent(BaseAgent):
 
                         if response_msg.status == A2AStatus.OK:
                             print(f"[Boss] ✓ Analyzer analysis received (msg_id: {response_msg.message_id}, trace: {response_msg.response_to})")
+                            _logger.log_a2a_receive(
+                                agent_name="Boss", message_id=response_msg.message_id,
+                                sender_id="analyzer_boss_worker", receiver_id="boss_boss_worker",
+                                action="analyze", payload=response_msg.payload or {},
+                                is_reply=True, reply_to_id=msg.message_id,
+                            )
                             return response_msg.payload
                         else:
                             print(f"[Boss] ! Analyzer error: {response_msg.error_code} - {response_msg.error_message}")
@@ -254,6 +270,15 @@ class BossAgent(BaseAgent):
             }
         )
 
+        from communication.message_logger import get_message_logger
+        _logger = get_message_logger()
+        _logger.log_a2a_send(
+            agent_name="Boss", message_id=msg.message_id,
+            sender_id=msg.sender_id, receiver_id=msg.receiver_id,
+            action="propose_strategy", payload=msg.payload,
+            is_question=True, expects_reply=True,
+        )
+
         async with httpx.AsyncClient(timeout=300.0) as client:
             for attempt in range(3):
                 try:
@@ -269,6 +294,12 @@ class BossAgent(BaseAgent):
 
                         if response_msg.status == A2AStatus.OK:
                             print(f"[Boss] ✓ Strategist strategy received (msg_id: {response_msg.message_id})")
+                            _logger.log_a2a_receive(
+                                agent_name="Boss", message_id=response_msg.message_id,
+                                sender_id="strategist_boss_worker", receiver_id="boss_boss_worker",
+                                action="propose_strategy", payload=response_msg.payload or {},
+                                is_reply=True, reply_to_id=msg.message_id,
+                            )
                             return response_msg.payload
                         else:
                             print(f"[Boss] ! Strategist error: {response_msg.error_code} - {response_msg.error_message}")
@@ -312,6 +343,15 @@ class BossAgent(BaseAgent):
             }
         )
 
+        from communication.message_logger import get_message_logger
+        _logger = get_message_logger()
+        _logger.log_a2a_send(
+            agent_name="Boss", message_id=msg.message_id,
+            sender_id=msg.sender_id, receiver_id=msg.receiver_id,
+            action="propose_guess", payload=msg.payload,
+            is_question=True, expects_reply=True,
+        )
+
         async with httpx.AsyncClient(timeout=300.0) as client:
             for attempt in range(3):
                 try:
@@ -327,6 +367,12 @@ class BossAgent(BaseAgent):
 
                         if response_msg.status == A2AStatus.OK:
                             print(f"[Boss] ✓ Proposer guess received (msg_id: {response_msg.message_id})")
+                            _logger.log_a2a_receive(
+                                agent_name="Boss", message_id=response_msg.message_id,
+                                sender_id="proposer_boss_worker", receiver_id="boss_boss_worker",
+                                action="propose_guess", payload=response_msg.payload or {},
+                                is_reply=True, reply_to_id=msg.message_id,
+                            )
                             return response_msg.payload
                         else:
                             print(f"[Boss] ! Proposer error: {response_msg.error_code} - {response_msg.error_message}")
@@ -366,6 +412,15 @@ class BossAgent(BaseAgent):
             }
         )
 
+        from communication.message_logger import get_message_logger
+        _logger = get_message_logger()
+        _logger.log_a2a_send(
+            agent_name="Boss", message_id=msg.message_id,
+            sender_id=msg.sender_id, receiver_id=msg.receiver_id,
+            action="validate", payload=msg.payload,
+            is_question=True, expects_reply=True,
+        )
+
         async with httpx.AsyncClient(timeout=300.0) as client:
             for attempt in range(3):
                 try:
@@ -381,6 +436,12 @@ class BossAgent(BaseAgent):
 
                         if response_msg.status == A2AStatus.OK:
                             print(f"[Boss] ✓ Validator validation received (msg_id: {response_msg.message_id})")
+                            _logger.log_a2a_receive(
+                                agent_name="Boss", message_id=response_msg.message_id,
+                                sender_id="validator_boss_worker", receiver_id="boss_boss_worker",
+                                action="validate", payload=response_msg.payload or {},
+                                is_reply=True, reply_to_id=msg.message_id,
+                            )
                             return response_msg.payload
                         else:
                             print(f"[Boss] ! Validator error: {response_msg.error_code} - {response_msg.error_message}")

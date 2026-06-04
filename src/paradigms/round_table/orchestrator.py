@@ -2,10 +2,12 @@
 # True autonomous peer-to-peer with agents making their own routing decisions
 
 import sys
+import os
 import time
 import asyncio
 import threading
 import httpx
+import socket
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, Request
@@ -66,32 +68,54 @@ class RoundTableOrchestrator:
 
 
     async def _start_servers(self) -> None:
-        """Start registry, agent servers, and orchestrator server."""
+        """Start registry, agent servers, and orchestrator server with dynamic ports."""
         print("[Orchestrator] Starting servers...")
 
-        # Start registry
+        # Find free port for registry
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 0))
+        registry_port = sock.getsockname()[1]
+        sock.close()
+
+        # Start registry with dynamic port
         self.registry_url = await asyncio.to_thread(
-            start_registry_server, 8100
+            start_registry_server, registry_port
         )
         print(f"[Orchestrator] Registry up at {self.registry_url}")
 
-        # Start agent servers
+        # Find free port for agent base port
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 0))
+        agent_base_port = sock.getsockname()[1]
+        sock.close()
+
+        # Start agent servers with dynamic port
         self.agent_urls = await asyncio.to_thread(
             start_agent_servers,
             self.provider,
             self.registry_url,
-            8101  # base port
+            agent_base_port
         )
         print(f"[Orchestrator] Workers online: {list(self.agent_urls.keys())}")
 
+        # Find free port for orchestrator server
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 0))
+        orch_port = sock.getsockname()[1]
+        sock.close()
+
         # Start orchestrator HTTP server to receive validation
         app = self._create_orchestrator_app()
+        self.orchestrator_url = f"http://localhost:{orch_port}"
 
         def run_orch_server():
             uvicorn.run(
                 app,
                 host="127.0.0.1",
-                port=8107,
+                port=orch_port,
                 log_level="error",
             )
 
@@ -100,6 +124,10 @@ class RoundTableOrchestrator:
 
         # Wait for orchestrator to be ready
         await asyncio.sleep(0.5)
+
+        # Pass orchestrator URL to agents via environment variable
+        os.environ["ORCHESTRATOR_URL"] = self.orchestrator_url
+
         print(f"[Orchestrator] HTTP server listening at {self.orchestrator_url}")
 
     def _create_orchestrator_app(self) -> FastAPI:
@@ -232,7 +260,11 @@ class RoundTableOrchestrator:
                 if round_count == 1:
                     feedback = {"correct_pegs": 0, "correct_positions": 0}
                 else:
-                    feedback = guess_history[-1]["feedback"]
+                    # Get feedback from last successful guess, or default to zeros
+                    if guess_history:
+                        feedback = guess_history[-1]["feedback"]
+                    else:
+                        feedback = {"correct_pegs": 0, "correct_positions": 0}
 
                 # Clear the event for new round
                 self.validation_received.clear()

@@ -859,7 +859,11 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
                 # Send to orchestrator's /receive_validation endpoint (fire-and-forget)
                 async def send_to_orchestrator():
                     try:
+                        import os
                         async with httpx.AsyncClient(timeout=10.0) as client:
+                            # Get orchestrator URL from environment or use default
+                            orch_url = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8107")
+
                             orch_msg = A2AMessage.request(
                                 sender_id="validator_round_table",
                                 receiver_id="orchestrator_round_table",
@@ -867,7 +871,7 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
                                 payload=result
                             )
                             orch_resp = await client.post(
-                                "http://localhost:8107/receive_validation",
+                                f"{orch_url}/receive_validation",
                                 json=orch_msg.to_dict(),
                                 timeout=10.0
                             )

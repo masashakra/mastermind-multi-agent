@@ -119,6 +119,19 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
             request_msg = A2AMessage.from_dict(body)
             payload = request_msg.payload
 
+            # Log incoming request
+            from communication.message_logger import get_message_logger
+            _logger = get_message_logger()
+            _logger.log_a2a_receive(
+                agent_name="Analyzer_BossWorker",
+                message_id=request_msg.message_id,
+                sender_id=request_msg.sender_id,
+                receiver_id="analyzer_boss_worker",
+                action="analyze",
+                payload=payload,
+                is_reply=False,
+            )
+
             # Execute analysis
             result = agent.analyze_feedback(
                 last_guess=payload.get("last_guess", []),
@@ -133,6 +146,19 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 status=A2AStatus.OK,
                 is_reply=True
             )
+
+            # Log outgoing reply
+            _logger.log_a2a_send(
+                agent_name="Analyzer_BossWorker",
+                message_id=response_msg.message_id,
+                sender_id="analyzer_boss_worker",
+                receiver_id=request_msg.sender_id,
+                action="analyze_reply",
+                payload=result,
+                is_question=False,
+                expects_reply=False,
+            )
+
             return response_msg.to_dict()
 
         except Exception as e:
@@ -174,6 +200,18 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
             request_msg = A2AMessage.from_dict(body)
             payload = request_msg.payload
 
+            from communication.message_logger import get_message_logger
+            _logger = get_message_logger()
+            _logger.log_a2a_receive(
+                agent_name="Strategist_BossWorker",
+                message_id=request_msg.message_id,
+                sender_id=request_msg.sender_id,
+                receiver_id="strategist_boss_worker",
+                action="propose_strategy",
+                payload=payload,
+                is_reply=False,
+            )
+
             # Execute strategy
             result = agent.propose_strategy(
                 guess_history=payload.get("guess_history", []),
@@ -191,6 +229,18 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
                 status=A2AStatus.OK,
                 is_reply=True
             )
+
+            _logger.log_a2a_send(
+                agent_name="Strategist_BossWorker",
+                message_id=response_msg.message_id,
+                sender_id="strategist_boss_worker",
+                receiver_id=request_msg.sender_id,
+                action="propose_strategy_reply",
+                payload=result,
+                is_question=False,
+                expects_reply=False,
+            )
+
             return response_msg.to_dict()
 
         except Exception as e:
@@ -232,6 +282,18 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
             request_msg = A2AMessage.from_dict(body)
             payload = request_msg.payload
 
+            from communication.message_logger import get_message_logger
+            _logger = get_message_logger()
+            _logger.log_a2a_receive(
+                agent_name="Proposer_BossWorker",
+                message_id=request_msg.message_id,
+                sender_id=request_msg.sender_id,
+                receiver_id="proposer_boss_worker",
+                action="propose_guess",
+                payload=payload,
+                is_reply=False,
+            )
+
             # Execute proposal
             result = agent.propose_guess(
                 guess_history=payload.get("guess_history", []),
@@ -249,6 +311,18 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
                 status=A2AStatus.OK,
                 is_reply=True
             )
+
+            _logger.log_a2a_send(
+                agent_name="Proposer_BossWorker",
+                message_id=response_msg.message_id,
+                sender_id="proposer_boss_worker",
+                receiver_id=request_msg.sender_id,
+                action="propose_guess_reply",
+                payload=result,
+                is_question=False,
+                expects_reply=False,
+            )
+
             return response_msg.to_dict()
 
         except Exception as e:
@@ -290,6 +364,18 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
             request_msg = A2AMessage.from_dict(body)
             payload = request_msg.payload
 
+            from communication.message_logger import get_message_logger
+            _logger = get_message_logger()
+            _logger.log_a2a_receive(
+                agent_name="Validator_BossWorker",
+                message_id=request_msg.message_id,
+                sender_id=request_msg.sender_id,
+                receiver_id="validator_boss_worker",
+                action="validate",
+                payload=payload,
+                is_reply=False,
+            )
+
             # Execute validation
             result = agent.validate_guess(
                 proposed_guess=payload.get("proposed_guess", []),
@@ -305,6 +391,18 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
                 status=A2AStatus.OK,
                 is_reply=True
             )
+
+            _logger.log_a2a_send(
+                agent_name="Validator_BossWorker",
+                message_id=response_msg.message_id,
+                sender_id="validator_boss_worker",
+                receiver_id=request_msg.sender_id,
+                action="validate_reply",
+                payload=result,
+                is_question=False,
+                expects_reply=False,
+            )
+
             return response_msg.to_dict()
 
         except Exception as e:

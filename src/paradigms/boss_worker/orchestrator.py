@@ -57,6 +57,13 @@ class BossWorkerOrchestrator:
 
         print(f"\n[Orchestrator] Starting Boss-Worker — puzzle {puzzle['puzzle_id']}")
 
+        # ── Initialize message logger (same mechanism as Round-Table) ─────────
+        puzzle_id = puzzle.get("puzzle_id", "unknown")
+        log_file  = f"logs/{puzzle_id}_boss_worker_{provider}_messages.log"
+        from communication.message_logger import init_message_logger
+        self.message_logger = init_message_logger(log_file)
+        print(f"[Orchestrator] Logging to {log_file}")
+
         # ── Start registry ────────────────────────────────────────────────────
         # Find free port for registry to avoid TIME_WAIT conflicts
         import socket
@@ -245,6 +252,10 @@ class BossWorkerOrchestrator:
         boss_tokens = self.boss.total_input_tokens + self.boss.total_output_tokens
 
         self.boss.close()
+
+        # ── Save message log ──────────────────────────────────────────────────
+        self.message_logger._write_to_file()
+        print(f"[Orchestrator] Log saved → {self.message_logger.log_file}")
 
         return {
             "puzzle_id":     self.puzzle["puzzle_id"],
