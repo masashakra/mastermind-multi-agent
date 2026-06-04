@@ -38,6 +38,11 @@ class LogEntry:
     status: str = "ok"
     error: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    # Reply tracking
+    is_question: Optional[bool] = None   # True = sender expects a reply
+    is_reply: Optional[bool] = None      # True = this is a reply to a prior message
+    reply_to_id: Optional[str] = None    # message_id this is replying to
+    expects_reply: Optional[bool] = None # True = fire-and-forget=False, expects HTTP response
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict, excluding None values."""
@@ -70,8 +75,16 @@ class MessageLogger:
         action: str,
         payload: Dict[str, Any],
         routing_decision: Optional[str] = None,
+        is_question: bool = False,
+        expects_reply: bool = False,
     ):
         """Log an outgoing A2A message."""
+        # Determine if this message type expects a reply
+        # receive_constraints = fire-and-forget (no reply needed)
+        # strategy/propose/validate = triggers work but response comes via next send
+        fire_and_forget_actions = {"receive_constraints"}
+        auto_expects = action not in fire_and_forget_actions
+
         entry = LogEntry(
             timestamp=time.time(),
             datetime_str=datetime.now().isoformat(),
@@ -83,6 +96,8 @@ class MessageLogger:
             action=action,
             payload=payload,
             routing_decision=routing_decision,
+            is_question=is_question,
+            expects_reply=expects_reply or auto_expects,
         )
         self._add_entry(entry)
 
@@ -95,6 +110,8 @@ class MessageLogger:
         action: str,
         payload: Dict[str, Any],
         status: str = "ok",
+        is_reply: bool = False,
+        reply_to_id: Optional[str] = None,
     ):
         """Log an incoming A2A message."""
         entry = LogEntry(
@@ -108,6 +125,8 @@ class MessageLogger:
             action=action,
             payload=payload,
             status=status,
+            is_reply=is_reply,
+            reply_to_id=reply_to_id,
         )
         self._add_entry(entry)
 

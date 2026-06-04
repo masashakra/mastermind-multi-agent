@@ -943,7 +943,7 @@ class BaseAgent(ABC):
                 if os.getenv("VERBOSE_A2A"):
                     print(f"  ├─ Payload: {json.dumps(payload, indent=2)[:500]}...")
 
-                # Log to message logger
+                # Log to message logger — include reply-tracking flags
                 from communication.message_logger import get_message_logger
                 logger = get_message_logger()
                 logger.log_a2a_send(
@@ -954,6 +954,8 @@ class BaseAgent(ABC):
                     action=action,
                     payload=payload,
                     routing_decision=routing_decision,
+                    is_question=is_question,       # True = sender BLOCKS waiting for reply
+                    expects_reply=is_question,     # Same — will log as explicit field
                 )
 
                 # Send HTTP POST with A2A envelope
@@ -971,8 +973,19 @@ class BaseAgent(ABC):
                     if isinstance(response_data, dict) and "message_id" in response_data:
                         response_msg = A2AMessage.from_dict(response_data)
                         if response_msg.status == A2AStatus.OK:
-                            # Log in memory
+                            # Log the reply received
                             if is_question:
+                                logger.log_a2a_receive(
+                                    agent_name=self.name,
+                                    message_id=response_msg.message_id,
+                                    sender_id=response_msg.sender_id or receiver_type,
+                                    receiver_id=request_msg.sender_id,
+                                    action=action,
+                                    payload=response_msg.payload or {},
+                                    status="ok",
+                                    is_reply=True,
+                                    reply_to_id=request_msg.message_id,
+                                )
                                 self.memory.receive_message(
                                     receiver_type,
                                     action,
