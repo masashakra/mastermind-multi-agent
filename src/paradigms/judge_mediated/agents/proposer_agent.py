@@ -121,35 +121,40 @@ class ProposerAgent(BaseAgent):
                     "reasoning": f"Permutation test: locked positions fixed, testing position(s) {unknown_positions} with remaining colors"
                 }
 
-        # ⭐ SIMPLIFIED PROMPT: Direct guess generation
-        # ⭐ OPTIMIZATION: Skip LLM call, use heuristic-based proposal
-        # Build guess directly without expensive LLM call
+        # ⭐ LLM-BACKED PROPOSAL: Use Analyzer's strategy to generate intelligent guess
+        prompt = f"""Generate Mastermind guess ({num_pegs} pegs).
+
+Strategy from Analyzer: {strategy_desc}
+
+Available colors: {', '.join(available_colors)}
+Colors in code: {', '.join(colors_in)}
+Locked positions (certain): {dict(locked_positions) if locked_positions else 'None'}
+Unknown positions: {list(range(num_pegs)) if not locked_positions else [i for i in range(num_pegs) if str(i) not in locked_positions]}
+
+Build a guess that:
+- Keeps locked positions fixed
+- Tests unknown positions with colors_in
+- Uses only colors from available list
+
+Output JSON:
+{{"guess": {json.dumps(['color'] * num_pegs)}, "reasoning": "Why this guess"}}"""
+
         try:
-            # Simple heuristic: use colors_in in order, keeping locked positions fixed
-            guess = [""] * num_pegs
+            response = self.call_llm(prompt)
 
-            # Fill locked positions
-            for pos_str, color in locked_positions.items():
-                try:
-                    pos = int(pos_str)
-                    if pos < num_pegs:
-                        guess[pos] = color
-                except (ValueError, IndexError):
-                    pass
+            # Parse JSON
+            try:
+                result = json.loads(response)
+            except json.JSONDecodeError:
+                import re
+                json_match = re.search(r'\{.*\}', response, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    # Fallback to heuristic
+                    result = {"guess": colors_in[:num_pegs]}
 
-            # Fill remaining positions with colors_in
-            color_idx = 0
-            for i in range(num_pegs):
-                if not guess[i]:
-                    # Use next available color from colors_in
-                    while color_idx < len(colors_in) and colors_in[color_idx] in guess:
-                        color_idx += 1
-                    if color_idx < len(colors_in):
-                        guess[i] = colors_in[color_idx]
-                        color_idx += 1
-                    else:
-                        # Fallback to first available color
-                        guess[i] = colors_in[0] if colors_in else available_colors[0]
+            guess = result.get("guess", colors_in[:num_pegs])
 
             # Validate and fix guess
             if not guess or len(guess) != num_pegs:
