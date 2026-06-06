@@ -44,7 +44,7 @@ class AnalyzerAgent(BaseAgent):
 
     def __init__(
         self,
-        provider: str = "ollama",
+        provider: str = "deepseek",
         comm_layer: Optional[A2ACommunicationLayer] = None,
         role: Optional[AgentRole] = None,
         paradigm: Optional[ParadigmType] = None,

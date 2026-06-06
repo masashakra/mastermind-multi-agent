@@ -1,22 +1,18 @@
-# Boss-Worker Agents Module
+# Judge-Mediated Paradigm Agents Module (Simplified - 1 Agent Per Team)
 
 from paradigms.judge_mediated.agents.base_agent import BaseAgent
-from paradigms.judge_mediated.agents.analyzer import AnalyzerAgent, AGENT_CARD as ANALYZER_CARD
-from paradigms.judge_mediated.agents.strategist import StrategistAgent, AGENT_CARD as STRATEGIST_CARD
-from paradigms.judge_mediated.agents.proposer import ProposerAgent, AGENT_CARD as PROPOSER_CARD
-from paradigms.judge_mediated.agents.validator import ValidatorAgent, AGENT_CARD as VALIDATOR_CARD
+from paradigms.judge_mediated.agents.team_agent import TeamAgent, AGENT_CARD as TEAM_AGENT_CARD
+from paradigms.judge_mediated.agents.judge import JudgeAgent, AGENT_CARD as JUDGE_CARD
+from paradigms.judge_mediated.agents.logger import LoggerAgent
 from paradigms.judge_mediated.agents.metrics import MetricsAgent, AGENT_CARD as METRICS_CARD
 
 __all__ = [
     "BaseAgent",
-    "AnalyzerAgent",
-    "StrategistAgent",
-    "ProposerAgent",
-    "ValidatorAgent",
+    "TeamAgent",
+    "JudgeAgent",
+    "LoggerAgent",
     "MetricsAgent",
-    "ANALYZER_CARD",
-    "STRATEGIST_CARD",
-    "PROPOSER_CARD",
-    "VALIDATOR_CARD",
+    "TEAM_AGENT_CARD",
+    "JUDGE_CARD",
     "METRICS_CARD",
 ]

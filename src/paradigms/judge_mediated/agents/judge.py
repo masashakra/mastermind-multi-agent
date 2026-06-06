@@ -58,13 +58,29 @@ class JudgeAgent(BaseAgent):
         provider: str = "deepseek",
         comm_layer: Optional[A2ACommunicationLayer] = None,
     ):
-        super().__init__(
-            name="Judge",
-            provider=provider,
-            comm_layer=comm_layer,
-            role=AgentRole.VALIDATOR,
-            paradigm=ParadigmType.JUDGE_MEDIATED,
-        )
+        # Try to initialize with LLM provider, but fall back to heuristic mode if not available
+        try:
+            super().__init__(
+                name="Judge",
+                provider=provider,
+                comm_layer=comm_layer,
+                role=AgentRole.VALIDATOR,
+                paradigm=ParadigmType.JUDGE_MEDIATED,
+            )
+            self.llm_available = True
+        except (ValueError, Exception) as e:
+            # Initialize without LLM - select_best_team() and rank_teams() heuristics will still work
+            print(f"[Judge] LLM unavailable ({str(e)[:50]}...), using heuristic mode")
+            # Minimal initialization without calling parent __init__ (to avoid LLM initialization)
+            self.name = "Judge"
+            self.agent_id = "judge"
+            self.provider = provider
+            self.llm = None
+            self.call_count = 0
+            self.total_input_tokens = 0
+            self.total_output_tokens = 0
+            self.comm_layer = comm_layer
+            self.llm_available = False
 
     def _detect_strategy_pattern(self, team_history: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Analyze a team's guessing patterns to detect their strategy."""
@@ -146,6 +162,100 @@ class JudgeAgent(BaseAgent):
             analysis["how_to_exploit"] = "Stay ahead by consolidating your advantage."
 
         return analysis
+
+    def select_best_team(
+        self,
+        team_guesses: Dict[int, List[str]],
+        all_team_histories: Dict[int, List[Dict[str, Any]]] = None,
+        pegs_to_solve: int = 4,
+    ) -> int:
+        """Select which team's guess to submit based on historical performance.
+
+        This is called BEFORE getting feedback, so it evaluates based on:
+        1. Current performance level (pegs/positions found)
+        2. Improvement trend over recent rounds
+        3. Strategy quality and adaptability
+
+        Args:
+            team_guesses: Dict mapping team_id -> current guess
+            all_team_histories: Historical data for all teams
+            pegs_to_solve: Number of pegs in puzzle
+
+        Returns:
+            team_id of the team whose guess should be submitted
+        """
+        if all_team_histories is None:
+            all_team_histories = {}
+
+        team_scores = {}
+
+        for team_id, history in all_team_histories.items():
+            if not history:
+                # No history - score is 0
+                team_scores[team_id] = {"score": 0, "reason": "No history yet"}
+                continue
+
+            # Get latest performance
+            latest = history[-1]
+            result = latest.get("result", {})
+            pegs = result.get("correct_pegs", 0)
+            positions = result.get("correct_positions", 0)
+
+            # Calculate performance metrics
+            distance = pegs_to_solve - positions
+
+            # Check improvement trend (last 3 rounds)
+            recent_rounds = history[-3:] if len(history) >= 3 else history
+            position_improvements = []
+            for i in range(1, len(recent_rounds)):
+                prev_pos = recent_rounds[i-1].get("result", {}).get("correct_positions", 0)
+                curr_pos = recent_rounds[i].get("result", {}).get("correct_positions", 0)
+                position_improvements.append(curr_pos - prev_pos)
+
+            improvement_trend = sum(position_improvements) if position_improvements else 0
+
+            # Detect strategy quality
+            strategy_pattern = self._detect_strategy_pattern(history)
+            strategy_score = {
+                "adaptive": 3,
+                "mixed_color_testing": 2,
+                "single_color_testing": 1,
+                "unknown": 0,
+            }.get(strategy_pattern.get("type", "unknown"), 0)
+
+            # Composite score: prefer lower distance (closer to solution)
+            # Reward improvement trend
+            # Reward better strategies
+            # Distance is most important: -10 points per peg away from solution
+            score = (
+                -10 * distance +           # Major: how close to solution
+                5 * improvement_trend +    # Bonus: improving
+                2 * strategy_score         # Bonus: good strategy
+            )
+
+            team_scores[team_id] = {
+                "score": score,
+                "distance": distance,
+                "positions": positions,
+                "pegs": pegs,
+                "trend": improvement_trend,
+                "strategy": strategy_pattern.get("type", "unknown"),
+                "reason": f"Distance: {distance}, Trend: {improvement_trend:+d}, Strategy: {strategy_pattern.get('type')}"
+            }
+
+        if not team_scores:
+            return 1  # Default to team 1
+
+        # Select team with highest score
+        best_team_id = max(team_scores.keys(), key=lambda t: team_scores[t]["score"])
+
+        print(f"\n[Judge] Team Selection:")
+        for team_id in sorted(team_scores.keys()):
+            info = team_scores[team_id]
+            print(f"  Team {team_id}: score={info['score']:.1f}, {info['reason']}")
+        print(f"[Judge] ✓ Selected Team {best_team_id} to submit guess")
+
+        return best_team_id
 
     def _generate_competitive_advice(
         self,
@@ -291,6 +401,74 @@ Keep it tactical and brief (2-3 sentences max per point).
             })
 
         return ranking
+
+    def generate_leaderboard_feedback(
+        self,
+        leaderboard: List[Dict[str, Any]],
+        all_team_histories: Dict[int, List[Dict[str, Any]]] = None,
+        pegs_to_solve: int = 4,
+    ) -> Dict[str, str]:
+        """Generate competitive feedback for leaderboard (Parallel Independent Racing).
+
+        Unlike rank_teams which was for Judge-Mediated racing, this provides feedback
+        for independent racing where each team has their own game engine.
+
+        Returns: Dict mapping "team_X" -> competitive feedback string
+        """
+        if all_team_histories is None:
+            all_team_histories = {}
+
+        feedback_dict = {}
+
+        for board_item in leaderboard:
+            team_id = board_item.get("team_id")
+            your_pegs = board_item.get("correct_pegs", 0)
+            your_positions = board_item.get("correct_positions", 0)
+
+            # Build summary of all teams for competitive context
+            team_statuses = []
+            for other_item in leaderboard:
+                if other_item["team_id"] != team_id:
+                    team_statuses.append(
+                        f"Team {other_item['team_id']}: {other_item['correct_pegs']} colors, "
+                        f"{other_item['correct_positions']} positions locked"
+                    )
+
+            # If LLM available, generate strategic commentary
+            if self.llm_available:
+                prompt = f"""You are a competitive game commentator for Mastermind.
+
+CURRENT STATUS FOR TEAM {team_id}:
+- Your progress: {your_pegs}/4 colors found, {your_positions}/4 positions locked
+- Other teams: {'; '.join(team_statuses)}
+
+Provide brief (1-2 sentence) competitive commentary that:
+1. Acknowledges your current position
+2. References opponent progress without revealing their guesses
+3. Suggests focus area (colors or positions)
+
+Keep it motivational and tactical."""
+
+                try:
+                    advice = self.call_llm(prompt)
+                    self.call_count += 1
+                    feedback_dict[f"team_{team_id}"] = advice
+                except Exception as e:
+                    # Fallback to heuristic feedback
+                    if your_positions < 2:
+                        fb = "Focus on finding all correct colors first before locking positions."
+                    else:
+                        fb = f"You're close! Keep testing position permutations to lock the remaining {4 - your_positions} positions."
+                    feedback_dict[f"team_{team_id}"] = fb
+            else:
+                # Heuristic feedback only
+                if your_positions < 2:
+                    fb = "Focus on finding all correct colors first before locking positions."
+                else:
+                    fb = f"You're close! Keep testing position permutations to lock the remaining {4 - your_positions} positions."
+                feedback_dict[f"team_{team_id}"] = fb
+
+        return feedback_dict
 
     def process(self, **kwargs) -> Dict[str, Any]:
         """Process team results and return ranking with competitive analysis."""

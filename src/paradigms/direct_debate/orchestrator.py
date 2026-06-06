@@ -1,335 +1,361 @@
-# Direct Debate Paradigm Orchestrator
-# Agents debate and discuss solutions openly before submitting
+"""
+Direct Adversarial Speed Racing Orchestrator — Peer-to-Peer Agent System
+
+Architecture:
+  1. Start registry HTTP server
+  2. Start team agents as HTTP servers (each autonomous)
+  3. Agents discover each other via registry
+  4. Agents solve independently, then debate via A2A
+  5. Orchestrator validates guesses (neutral game referee)
+  6. Orchestrator collects final results
+
+Agents operate as peers: they communicate directly via A2A,
+orchestrator manages game validation and state.
+"""
 
 import sys
+import os
+import time
+import threading
+import asyncio
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import time
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+import httpx
+from fastapi import FastAPI
+import uvicorn
 
+from registry.registry_server import start_registry_server
+from paradigms.direct_debate.agents.agent_server import start_agent_servers
 from game_engine import GameEngine
 from puzzle_generator import load_puzzles
-from communication.protocol import A2ACommunicationLayer
-from registry.registry import get_global_registry
-from paradigms.direct_debate.agents import (
-    AnalyzerAgent,
-    StrategistAgent,
-    ProposerAgent,
-    ValidatorAgent,
-    LoggerAgent,
-    MetricsAgent,
-)
 
 
 class DirectDebateOrchestrator:
-    """Orchestrates the Direct Debate paradigm
+    """Orchestrator for autonomous peer-to-peer agents.
 
-    Structure:
-    - Agents debate and discuss solutions openly
-    - Multiple rounds of discussion and refinement
-    - Collaborative approach to problem-solving
-    - Focus on consensus through dialogue
+    Role: manage game validation and state (neutral referee).
+    Agents solve and debate autonomously via A2A.
     """
 
-    def __init__(self, puzzle: Dict[str, Any], provider: str = "ollama"):
-        """Initialize orchestrator for one puzzle
+    MAX_ROUNDS = 16
 
-        Args:
-            puzzle: Puzzle dictionary from puzzle_generator
-            provider: LLM provider ("ollama", "groq", "claude", "kaggle")
-        """
+    def __init__(self, puzzle: Dict[str, Any], provider: str = "deepseek", num_teams: int = 2):
         self.puzzle = puzzle
         self.provider = provider
         self.paradigm = "direct_debate"
-        self.game_engine = GameEngine(puzzle["secret_code"], puzzle["difficulty"])
+        self.num_teams = num_teams
+        self.team_ids = [f"team_{i+1}" for i in range(num_teams)]
         self.start_time = time.time()
 
-        # A2A Communication
-        self.comm_layer = A2ACommunicationLayer()
-        self.registry = get_global_registry(self.comm_layer)
+        print(f"\n[Orchestrator] Starting Direct Adversarial Speed Racing — puzzle {puzzle['puzzle_id']}")
+        print(f"[Orchestrator] Teams: {self.num_teams} (autonomous peer-to-peer)")
 
-        # Initialize agents (debate participants)
-        self.analyzer = AnalyzerAgent(provider=provider, comm_layer=self.comm_layer)
-        self.strategist = StrategistAgent(provider=provider, comm_layer=self.comm_layer)
-        self.proposer = ProposerAgent(provider=provider, comm_layer=self.comm_layer)
-        self.validator = ValidatorAgent(provider=provider, comm_layer=self.comm_layer)
-        self.logger = LoggerAgent(paradigm_name=self.paradigm)
-        self.metrics = MetricsAgent(paradigm_name=self.paradigm)
+        # ── Initialize message logger ─────────────────────────────────────────
+        puzzle_id = puzzle.get("puzzle_id", "unknown")
+        import os; os.makedirs("logs", exist_ok=True)
+        log_file = f"logs/{puzzle_id}_direct_debate_{provider}_messages.log"
+        # Each subprocess gets its own log file to avoid concurrent write conflicts.
+        # The orchestrator merges them at the end into the main log file.
+        self.main_log_file = log_file
+        self.team_log_files = {}  # team_id → per-team log file path
+        from communication.message_logger import init_message_logger
+        self.message_logger = init_message_logger(log_file)
+        print(f"[Orchestrator] Logging to {log_file}")
 
-        # Register debate participants
-        self.registry.register_agent({"agent_id": "analyzer", "agent_name": "Analyzer", "agent_type": "analyzer", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "strategist", "agent_name": "Strategist", "agent_type": "strategist", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "proposer", "agent_name": "Proposer", "agent_type": "proposer", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "validator", "agent_name": "Validator", "agent_type": "validator", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "logger", "agent_name": "Logger", "agent_type": "logger", "paradigm": self.paradigm})
-        self.registry.register_agent({"agent_id": "metrics", "agent_name": "Metrics", "agent_type": "metrics", "paradigm": self.paradigm})
+        # ── Start registry ────────────────────────────────────────────────────
+        import socket
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 0))
+        registry_port = sock.getsockname()[1]
+        sock.close()
+        self.registry_url = start_registry_server(port=registry_port)
+        print(f"[Orchestrator] Registry up at {self.registry_url}")
 
-    def run(self) -> Dict[str, Any]:
-        """Run one complete puzzle with Direct Debate paradigm
+        # Wait for registry to be ready
+        time.sleep(1.0)
 
-        Returns:
-            {
-                "puzzle_id": str,
-                "paradigm": "direct_debate",
-                "success": bool,
-                "guesses": int,
-                "rounds": int,
-                "elapsed_time": float,
-                "guess_history": list,
-                "message_count": int,
-                "token_usage": dict,
-                "agent_stats": dict
-            }
-        """
-        guess_history = []
-        round_count = 0
+        # ── Start orchestrator HTTP server (for guess validation) ─────────────
+        import socket
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 0))
+        orch_port = sock.getsockname()[1]
+        sock.close()
+        self.orchestrator_url = f"http://localhost:{orch_port}"
+        self._setup_http_server(orch_port)
 
-        while round_count < 8 and not self.game_engine.is_game_over():
-            round_count += 1
+        # ── Start autonomous agent servers ───────────────────────────────────
+        self.team_urls = start_agent_servers(
+            provider=provider,
+            registry_url=self.registry_url,
+            base_port=8501,  # 8501+ — avoids conflict with judge_mediated (8301) and boss_worker (8201)
+            num_teams=num_teams,
+            orchestrator_url=self.orchestrator_url,
+        )
+        print(f"[Orchestrator] Teams online: {list(self.team_urls.keys())}")
 
+        # ── Game state: shared with agents for coordination ───────────────────
+        self.current_round = 1
+        # ONE SHARED GAME ENGINE - All teams compete for the same puzzle
+        self.game_engine = GameEngine(puzzle["secret_code"], puzzle["difficulty"])
+        # Track all guesses in order (for leaderboard)
+        self.all_guesses: List[Dict[str, Any]] = []  # {"team_id": str, "guess": list, "feedback": dict, "timestamp": float}
+        # Track submission order for determining winner
+        self.submission_order: List[str] = []  # Order teams submitted guesses
+        self.solved_teams: List[str] = []
+        self.game_over = False
+        self.winner = None
+
+    def _setup_http_server(self, port: int) -> None:
+        """Setup HTTP server for guess validation."""
+        app = FastAPI()
+
+        @app.post("/submit_guess")
+        def submit_guess(body: Dict[str, Any]) -> Dict[str, Any]:
+            """Receive guess from agent, validate against SHARED game engine."""
             try:
-                # Round opening: Debate phase
-                self.logger.log_message({
-                    "message_type": "debate_round_start",
-                    "sender": "orchestrator",
-                    "receiver": "all_agents",
-                    "round": round_count,
-                    "content": {"round": round_count, "phase": "debate_discussion"}
-                })
+                team_id = body.get("team_id", "")
+                guess = body.get("guess", [])
 
-                # Step 1: Analyzer presents analysis
-                if guess_history:
-                    last_guess = guess_history[-1]
-                    analysis = self.analyzer.analyze_feedback(
-                        last_guess.get("guess", []),
-                        last_guess.get("feedback", {}),
-                        guess_history[:-1]
-                    )
-                else:
-                    analysis = {
-                        "correct_positions": [],
-                        "correct_colors_wrong_position": [],
-                        "constraints": [],
-                        "impossible_colors": [],
-                        "analysis": "First round - all codes possible",
-                        "confidence": 0.5
+                if team_id not in self.team_ids:
+                    return {"valid": False, "error": f"Unknown team: {team_id}"}
+
+                if not guess:
+                    return {"valid": False, "error": "Empty guess"}
+
+                # If game already over, reject new submissions
+                if self.game_over:
+                    return {
+                        "valid": True,
+                        "feedback": {"correct_pegs": 0, "correct_positions": 0},
+                        "solved": False,
+                        "game_over": True,
+                        "winner": self.winner,
                     }
 
-                # Log analysis for debate
-                self.logger.log_message({
-                    "message_type": "debate_analysis",
-                    "sender": "analyzer",
-                    "receiver": "all_agents",
-                    "round": round_count,
-                    "content": analysis
-                })
-
-                # Step 2: Strategist proposes approach
-                strategy = self.strategist.propose_strategy(
-                    guess_history,
-                    self.puzzle["difficulty"]
-                )
-
-                # Log strategy for debate
-                self.logger.log_message({
-                    "message_type": "debate_strategy",
-                    "sender": "strategist",
-                    "receiver": "all_agents",
-                    "round": round_count,
-                    "content": strategy
-                })
-
-                # Step 3: Proposer suggests guess
-                constraints_text = "\n".join(analysis.get("constraints", []))
-                proposal = self.proposer.propose_guess(
-                    strategy=strategy.get("strategy", ""),
-                    constraints_text=constraints_text,
-                    available_colors=self.puzzle.get("available_colors", []),
-                    num_pegs=self.puzzle.get("pegs", 4),
-                    previous_guesses=[g.get("guess", []) for g in guess_history]
-                )
-
-                # Log proposal for debate discussion
-                self.logger.log_message({
-                    "message_type": "debate_proposal",
-                    "sender": "proposer",
-                    "receiver": "all_agents",
-                    "round": round_count,
-                    "content": proposal
-                })
-
-                # Step 4: Validator examines proposal
-                guess = proposal.get("proposed_guess", [])
-                validation = self.validator.validate_guess(
-                    guess=guess,
-                    available_colors=self.puzzle.get("available_colors", []),
-                    expected_length=self.puzzle.get("pegs", 4),
-                    previous_guesses=[g.get("guess", []) for g in guess_history],
-                    constraints={
-                        "correct_positions": analysis.get("correct_positions", []),
-                        "correct_colors_wrong_position": analysis.get("correct_colors_wrong_position", []),
-                        "impossible_colors": analysis.get("impossible_colors", [])
-                    }
-                )
-
-                # Log validation for debate
-                self.logger.log_message({
-                    "message_type": "debate_validation",
-                    "sender": "validator",
-                    "receiver": "all_agents",
-                    "round": round_count,
-                    "content": validation
-                })
-
-                # Debate conclusion: If invalid, discuss and refine
-                if not validation.get("valid", True):
-                    self.logger.log_message({
-                        "message_type": "debate_concern",
-                        "sender": "validator",
-                        "receiver": "all_agents",
-                        "round": round_count,
-                        "content": {
-                            "concern": "Invalid proposal",
-                            "violations": validation.get("hard_violations", []),
-                            "action": "continue_debate"
-                        }
-                    })
-                    continue
-
-                # Consensus reached: Submit agreed proposal
-                self.logger.log_message({
-                    "message_type": "debate_consensus",
-                    "sender": "orchestrator",
-                    "receiver": "all_agents",
-                    "round": round_count,
-                    "content": {"consensus": "Proposal accepted by all agents"}
-                })
-
-                # Step 5: Submit agreed guess
+                # Submit to SHARED game engine
                 feedback = self.game_engine.submit_guess(guess)
 
-                if not feedback.get("valid", False):
-                    self.logger.log_message({
-                        "message_type": "error",
-                        "sender": "game_engine",
-                        "receiver": "all_agents",
-                        "round": round_count,
-                        "content": {"error": feedback.get("error", "Invalid guess")}
-                    })
-                    continue
-
-                # Record in history
-                guess_history.append({
-                    "round": round_count,
-                    "guess": guess,
-                    "feedback": feedback.get("feedback", {})
-                })
-
-                # Log feedback for all to learn from
-                self.logger.log_message({
-                    "message_type": "shared_feedback",
-                    "sender": "game_engine",
-                    "receiver": "all_agents",
-                    "round": round_count,
-                    "content": {
-                        "correct_pegs": feedback.get("feedback", {}).get("correct_pegs", 0),
-                        "correct_positions": feedback.get("feedback", {}).get("correct_positions", 0),
-                        "solved": feedback.get("solved", False)
+                if feedback.get("valid", False):
+                    # Record guess (PUBLIC - visible to all teams)
+                    submission = {
+                        "team_id": team_id,
+                        "guess": guess,
+                        "feedback": feedback.get("feedback", {}),
+                        "timestamp": time.time(),
+                        "solved": feedback.get("solved", False),
                     }
-                })
+                    self.all_guesses.append(submission)
+                    self.submission_order.append(team_id)
 
-                # Record metrics
-                self.metrics.record_metric("round", round_count)
-                self.metrics.record_metric("guess", str(guess))
-                self.metrics.record_metric("debate_rounds_per_guess", 1)
-                self.metrics.record_metric("correct_pegs", feedback.get("feedback", {}).get("correct_pegs", 0))
-                self.metrics.record_metric("correct_positions", feedback.get("feedback", {}).get("correct_positions", 0))
+                    # Check if solved
+                    if feedback.get("solved", False):
+                        if not self.winner:
+                            self.winner = team_id
+                            self.game_over = True
+                            print(f"\n[Orchestrator] 🏆 {team_id} SOLVED THE PUZZLE!")
+                            print(f"[Orchestrator] Game Over - First team to solve: {team_id}")
 
-                # Check if solved
-                if feedback.get("solved", False):
-                    break
+                    # Build PUBLIC LEADERBOARD (feedback only, guesses private)
+                    public_leaderboard = []
+                    for guess_entry in self.all_guesses:
+                        public_leaderboard.append({
+                            "team_id": guess_entry["team_id"],
+                            "feedback": guess_entry["feedback"],
+                            "solved": guess_entry["solved"],
+                            # Note: "guess" is NOT included (guesses remain private)
+                        })
+
+                    return {
+                        "valid": True,
+                        "feedback": feedback.get("feedback", {}),
+                        "solved": feedback.get("solved", False),
+                        "public_leaderboard": public_leaderboard,  # Feedback scores only, no guesses
+                    }
+                else:
+                    return {"valid": False, "error": feedback.get("error", "Invalid guess")}
 
             except Exception as e:
-                self.logger.log_message({
-                    "message_type": "error",
-                    "sender": "orchestrator",
-                    "receiver": "all_agents",
-                    "round": round_count,
-                    "content": {"error": str(e)}
-                })
-                continue
+                return {"valid": False, "error": str(e)}
 
-        elapsed_time = time.time() - self.start_time
+        # Run server in background
+        def run_server():
+            config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="error")
+            server = uvicorn.Server(config)
+            asyncio.run(server.serve())
 
-        # Determine success
-        success = False
-        if guess_history:
-            last_feedback = guess_history[-1].get("feedback", {})
-            success = last_feedback.get("correct_positions", 0) == self.puzzle.get("pegs", 4)
+        import asyncio
+        thread = threading.Thread(target=run_server, daemon=True)
+        thread.start()
+        print(f"[Orchestrator] HTTP server up at {self.orchestrator_url}")
 
-        # Save metrics
-        self.metrics.record_metric("total_guesses", len(guess_history))
-        self.metrics.record_metric("total_rounds", round_count)
-        self.metrics.record_metric("success", success)
-        self.metrics.save_metrics()
+        # Wait for server to start
+        time.sleep(0.5)
+
+    def run(self) -> Dict[str, Any]:
+        """Run puzzle with autonomous agents competing for ONE shared puzzle.
+
+        Orchestrator role: validate guesses, track leaderboard, declare winner.
+        """
+        print(f"\n[Orchestrator] Starting puzzle execution...")
+        print(f"[Orchestrator] ONE SHARED PUZZLE - Teams compete for the same solution")
+        print(f"[Orchestrator] First team to solve wins! 🏁")
+
+        # Notify agents to start
+        self._notify_agents_start()
+
+        # Wait for first team to solve (game ends immediately)
+        self._wait_for_completion()
+
+        elapsed = time.time() - self.start_time
+
+        # Merge per-team log files into the main log file
+        self._merge_team_logs()
+        print(f"\n[Orchestrator] Log saved → {self.main_log_file}")
+
+        # Build leaderboard
+        leaderboard = []
+        teams_that_solved = set()
+        for guess in self.all_guesses:
+            team = guess["team_id"]
+            if team not in teams_that_solved and guess["solved"]:
+                leaderboard.append(team)
+                teams_that_solved.add(team)
 
         return {
             "puzzle_id": self.puzzle["puzzle_id"],
             "paradigm": self.paradigm,
-            "difficulty": self.puzzle["difficulty"],
-            "success": success,
-            "guesses": len(guess_history),
-            "rounds": round_count,
-            "elapsed_time": elapsed_time,
-            "guess_history": guess_history,
-            "message_count": len(self.logger.logs),
-            "token_usage": {
-                "analyzer": self.analyzer.total_input_tokens + self.analyzer.total_output_tokens,
-                "strategist": self.strategist.total_input_tokens + self.strategist.total_output_tokens,
-                "proposer": self.proposer.total_input_tokens + self.proposer.total_output_tokens,
-                "validator": self.validator.total_input_tokens + self.validator.total_output_tokens,
-                "total": (
-                    self.analyzer.total_input_tokens + self.analyzer.total_output_tokens +
-                    self.strategist.total_input_tokens + self.strategist.total_output_tokens +
-                    self.proposer.total_input_tokens + self.proposer.total_output_tokens +
-                    self.validator.total_input_tokens + self.validator.total_output_tokens
+            "difficulty": self.puzzle.get("difficulty", "easy"),
+            "success": len(leaderboard) > 0,
+            "winner": self.winner,
+            "leaderboard": leaderboard,  # Order of teams that solved
+            "total_guesses": len(self.all_guesses),
+            "elapsed_time": elapsed,
+            "all_guesses": self.all_guesses,  # Complete public record
+            "submission_order": self.submission_order,
+        }
+
+    def _notify_agents_start(self) -> None:
+        """Tell agents to start solving."""
+        print("\n[Orchestrator] Notifying agents to begin...")
+        puzzle_id = self.puzzle.get("puzzle_id", "unknown")
+
+        for team_id in self.team_ids:
+            url = self.team_urls[team_id]
+            # Each team writes to its own log file — merged at end
+            team_log = f"logs/{puzzle_id}_direct_debate_{self.provider}_{team_id}_messages.log"
+            self.team_log_files[team_id] = team_log
+            try:
+                httpx.post(
+                    f"{url}/start_puzzle",
+                    json={
+                        "puzzle": self.puzzle,
+                        "team_id": team_id,
+                        "registry_url": self.registry_url,
+                        "orchestrator_url": self.orchestrator_url,
+                        "log_file": team_log,
+                    },
+                    timeout=5.0
                 )
-            },
-            "agent_stats": {
-                "analyzer": {"calls": self.analyzer.call_count, "tokens": self.analyzer.total_input_tokens + self.analyzer.total_output_tokens},
-                "strategist": {"calls": self.strategist.call_count, "tokens": self.strategist.total_input_tokens + self.strategist.total_output_tokens},
-                "proposer": {"calls": self.proposer.call_count, "tokens": self.proposer.total_input_tokens + self.proposer.total_output_tokens},
-                "validator": {"calls": self.validator.call_count, "tokens": self.validator.total_input_tokens + self.validator.total_output_tokens},
+            except Exception as e:
+                print(f"[Orchestrator] Warning: Could not notify {team_id}: {e}")
+
+    def _merge_team_logs(self) -> None:
+        """Merge per-team log files into one main log file, sorted by timestamp."""
+        import json, time as _time
+        all_entries = []
+
+        for team_id, team_log in self.team_log_files.items():
+            try:
+                with open(team_log) as f:
+                    data = json.load(f)
+                entries = data.get("puzzle_run_log", {}).get("entries", [])
+                all_entries.extend(entries)
+                print(f"[Orchestrator] Merged {len(entries)} entries from {team_id}")
+            except Exception as e:
+                print(f"[Orchestrator] Could not merge log for {team_id}: {e}")
+
+        # Sort by timestamp
+        all_entries.sort(key=lambda e: e.get("timestamp", 0))
+
+        merged = {
+            "puzzle_run_log": {
+                "start_time": self.message_logger.start_time,
+                "start_datetime": __import__("datetime").datetime.fromtimestamp(
+                    self.message_logger.start_time
+                ).isoformat(),
+                "total_entries": len(all_entries),
+                "entries": all_entries,
             }
         }
 
+        with open(self.main_log_file, "w") as f:
+            json.dump(merged, f, indent=2)
+
+        print(f"[Orchestrator] Merged {len(all_entries)} total entries → {self.main_log_file}")
+
+    def _wait_for_completion(self) -> None:
+        """Wait for first team to solve the shared puzzle."""
+        timeout = time.time() + 1800  # 30 minute timeout (increased to allow solving)
+
+        while time.time() < timeout and not self.game_over:
+            # Game ends immediately when someone solves
+            if self.winner:
+                self.game_over = True
+                break
+
+            # Also check if max total guesses exceeded (team-independent)
+            if len(self.all_guesses) >= (self.MAX_ROUNDS * len(self.team_ids)):
+                self.game_over = True
+                break
+
+            time.sleep(1)
+
 
 if __name__ == "__main__":
-    # Test: Run one puzzle
-    print("=" * 80)
-    print("DIRECT DEBATE PARADIGM TEST")
-    print("=" * 80)
+    print("=" * 70)
+    print("DIRECT ADVERSARIAL SPEED RACING — ONE SHARED PUZZLE")
+    print("=" * 70)
 
     try:
         puzzles = load_puzzles()
-        test_puzzle = next(p for p in puzzles if p['difficulty'] == 'easy')
+        puzzle_map = {p["puzzle_id"]: p for p in puzzles}
+        # Batch mode: DD_PUZZLE_ID env var selects specific puzzle
+        target_id = os.environ.get("DD_PUZZLE_ID")
+        if target_id and target_id in puzzle_map:
+            test_puzzle = puzzle_map[target_id]
+        else:
+            import random
+            easy_puzzles = [p for p in puzzles if p["difficulty"] == "easy"]
+            test_puzzle = random.choice(easy_puzzles)
 
-        print(f"\nTesting puzzle: {test_puzzle['puzzle_id']}")
-        print(f"Difficulty: {test_puzzle['difficulty']}")
+        print(f"Puzzle : {test_puzzle['puzzle_id']}")
+        print(f"Secret : {test_puzzle['secret_code']}")
 
-        orchestrator = DirectDebateOrchestrator(test_puzzle, provider="ollama")
+        orchestrator = DirectDebateOrchestrator(test_puzzle, provider="deepseek", num_teams=2)
         result = orchestrator.run()
 
-        print(f"\nResult:")
-        print(f"  Success: {result['success']}")
-        print(f"  Guesses: {result['guesses']}")
-        print(f"  Rounds: {result['rounds']}")
-        print(f"  Time: {result['elapsed_time']:.1f}s")
-        print(f"  Messages: {result['message_count']}")
-        print(f"  Tokens: {result['token_usage']['total']}")
+        print("\n" + "=" * 70)
+        print("RESULT — PUBLIC LEADERBOARD")
+        print("=" * 70)
+        print(f"Winner          : {result['winner']} 🏆")
+        print(f"Total Guesses   : {result['total_guesses']}")
+        print(f"Elapsed Time    : {result['elapsed_time']:.1f}s")
+        print(f"Puzzle Solved   : {'YES ✅' if result['success'] else 'NO ❌'}")
 
-    except Exception as e:
-        print(f"\nError: {e}")
+        if result['all_guesses']:
+            print(f"\n📊 All Guesses (Public Record):")
+            for i, guess_entry in enumerate(result['all_guesses'], 1):
+                team = guess_entry['team_id']
+                guess = guess_entry['guess']
+                fb = guess_entry['feedback']
+                solved = "✅ SOLVED!" if guess_entry['solved'] else ""
+                print(f"  {i}. {team}: {guess} → {fb['correct_pegs']}p {fb['correct_positions']}pos {solved}")
+
+    except Exception as exc:
         import traceback
+        print(f"\nError: {exc}")
         traceback.print_exc()

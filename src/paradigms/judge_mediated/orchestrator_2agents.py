@@ -1,9 +1,11 @@
 """
-Judge-Mediated Speed Racing - 2-Agent Optimized Version
+Parallel Independent Racing - 2-Agent Optimized Version
 - 2 Teams (optimized for cost/performance)
 - 2 Agents per team (Analyzer-Strategist + Proposer)
-- Enhanced Judge with competitive intelligence
-- Cost: ~35-40 LLM calls total (vs 96 for 4-agent)
+- Each team solves INDEPENDENTLY with their own puzzle instance
+- Both guesses submitted SIMULTANEOUSLY
+- Winner: First team to solve (by round count, not time)
+- Judge provides LEADERBOARD ONLY (no guess interference)
 """
 
 import sys
@@ -31,11 +33,12 @@ class TwoAgentOrchestrator:
     def __init__(self, puzzle: Dict[str, Any], provider: str = "deepseek"):
         self.puzzle = puzzle
         self.provider = provider
-        self.paradigm = "judge_mediated_2agents"
+        self.paradigm = "parallel_independent_racing"
         self.start_time = time.time()
 
-        print(f"\n[Orchestrator] Starting 2-Agent Judge-Mediated — puzzle {puzzle['puzzle_id']}")
+        print(f"\n[Orchestrator] Starting Parallel Independent Racing — puzzle {puzzle['puzzle_id']}")
         print(f"[Orchestrator] Teams: {self.NUM_TEAMS}, Agents per team: 2")
+        print(f"[Orchestrator] ⚡ Each team solves their own puzzle instance independently")
 
         # Team management
         self.team_analyzer_urls: Dict[int, str] = {}
@@ -47,19 +50,74 @@ class TwoAgentOrchestrator:
             i: {} for i in range(1, self.NUM_TEAMS + 1)
         }
 
-        # ⭐ REMOVED: team_analysis_histories - Agents now manage their own memory!
+        # ⭐ Judge provides LEADERBOARD only (no guess interference)
+        self.judge = JudgeAgent(provider=provider)
+        if hasattr(self.judge, 'llm_available') and not self.judge.llm_available:
+            print(f"[Orchestrator] Judge online (leaderboard + competitive analysis)")
+        else:
+            print(f"[Orchestrator] Judge online with {provider} LLM")
 
-        # Judge doesn't need provider since we skip LLM calls
-        try:
-            self.judge = JudgeAgent(provider=provider)
-        except ValueError:
-            # No API keys available - create judge without provider
-            print(f"[Orchestrator] Judge: No API keys, using hardcoded rankings")
-            sys.stdout.flush()
-            # We'll use inline ranking instead
-            self.judge = None
+        # ⭐ PARALLEL INDEPENDENT RACING: Each team gets their OWN game engine!
+        # Both teams solve the SAME puzzle (same secret) but with independent game instances
+        self.team_game_engines: Dict[int, GameEngine] = {}
+        for team_id in range(1, self.NUM_TEAMS + 1):
+            self.team_game_engines[team_id] = GameEngine(
+                puzzle.get("secret_code", []),
+                puzzle.get("difficulty", "easy")
+            )
+            print(f"[Orchestrator] Created game engine for Team {team_id}")
 
-        self.game_engine = GameEngine(puzzle.get("secret_code", []), puzzle.get("difficulty", "easy"))
+        # Track which teams have solved
+        self.team_solved: Dict[int, bool] = {i: False for i in range(1, self.NUM_TEAMS + 1)}
+        self.team_solve_round: Dict[int, int] = {i: None for i in range(1, self.NUM_TEAMS + 1)}
+
+        # ⭐ BOSS-WORKER STATE: Maintain locked positions per team
+        # This is the key to preventing oscillation!
+        self.team_locked_positions: Dict[int, Dict[int, str]] = {
+            i: {} for i in range(1, self.NUM_TEAMS + 1)
+        }
+        self.team_colors_in: Dict[int, set] = {
+            i: set() for i in range(1, self.NUM_TEAMS + 1)
+        }
+        self.team_colors_out: Dict[int, set] = {
+            i: set() for i in range(1, self.NUM_TEAMS + 1)
+        }
+
+    def _extract_locked_positions(self, guess: List[str], feedback: Dict[str, Any]) -> Dict[int, str]:
+        """Extract which positions are locked based on guess and feedback.
+
+        A position is locked when:
+        1. That peg color exists in the code (correct_pegs > 0 for that color)
+        2. The feedback says we got correct_positions > 0
+        3. We can infer which position(s) from the guess
+
+        For now, use a heuristic: if we got N positions correct and N > 0,
+        those positions match the guess at those indices.
+        """
+        # This is simplified - in practice you'd need to track which exact positions
+        # For now, return empty dict and update from feedback pattern
+        locked = {}
+
+        # If we got correct_positions feedback and previously found certain positions,
+        # they're likely still locked
+        # This will be populated by analyzing multiple guesses
+        return locked
+
+    def _update_team_game_state(self, team_id: int, guess: List[str], feedback: Dict[str, Any]) -> None:
+        """Update team's game state based on guess and feedback (Boss-Worker pattern)."""
+        correct_pegs = feedback.get("feedback", {}).get("correct_pegs", 0)
+        correct_positions = feedback.get("feedback", {}).get("correct_positions", 0)
+
+        # Heuristic: If we got correct_positions and the guess has a stable pattern,
+        # mark those positions as locked
+        if correct_positions > 0 and guess:
+            # For now, we'll trust the guess positions that gave us correct_positions
+            # A more sophisticated approach would track position stability across rounds
+            pass
+
+        # Note: Full locked position extraction requires solving the permutation matching
+        # problem, which is what the LLM is trying to solve.
+        # We'll enhance this as we learn more patterns.
 
     def _initialize_infrastructure(self) -> None:
         """Start agent servers for both teams."""
@@ -102,12 +160,21 @@ class TwoAgentOrchestrator:
 
             # Call agent servers (client reused across rounds for efficiency)
             # STEP 1: Call Analyzer-Strategist
+            # ⭐ CRITICAL FIX: Pass full history with feedback, not just guesses!
+            # Position detection algorithm needs both guesses AND feedback to work
+            full_history = []
+            for entry in self.team_histories[team_id]:
+                full_history.append({
+                    "guess": entry.get("guess", []),
+                    "feedback": entry.get("result", {}),  # The game feedback with correct_pegs/correct_positions
+                })
+
             analyzer_msg = A2AMessage.request(
                 sender_id="orchestrator",
                 receiver_id=f"analyzer-{team_id}",
                 action="analyze_and_strategize",
                 payload={
-                    "guess_history": [g.get("guess", []) for g in self.team_histories[team_id]],
+                    "guess_history": full_history,  # Now includes feedback!
                     "last_feedback": self.team_last_feedback[team_id],
                     "competitive_analysis": competitive_analysis,
                     "difficulty": self.puzzle.get("difficulty", "easy"),
@@ -126,7 +193,14 @@ class TwoAgentOrchestrator:
                 timeout=350.0
             )
 
-            analyzer_result = A2AMessage.from_dict(analyzer_response.json()).payload
+            # DEBUG: Check response format
+            response_json = analyzer_response.json()
+            if "message" in response_json and "message_id" not in response_json:
+                print(f"[DEBUG] Team {team_id} analyzer response has 'message' field but no 'message_id':")
+                print(f"  Response keys: {list(response_json.keys())}")
+                print(f"  Full response: {response_json}")
+
+            analyzer_result = A2AMessage.from_dict(response_json).payload
             strategy_desc = analyzer_result.get("strategy", "")[:60]
             print(f"[DEBUG] Team {team_id} Analyzer: strategy = {strategy_desc}...")
             sys.stdout.flush()
@@ -134,15 +208,16 @@ class TwoAgentOrchestrator:
             # ⭐ REMOVED: No longer storing analysis_history here!
             # Analyzer maintains its own memory now (stateful agent)
 
-            # STEP 2: Call Proposer with strategy
+            # STEP 2: Call Proposer with strategy AND cumulative constraints
             proposer_msg = A2AMessage.request(
                 sender_id="orchestrator",
                 receiver_id=f"proposer-{team_id}",
                 action="propose_guess",
                 payload={
-                    "strategy": analyzer_result,
+                    "strategy": analyzer_result,  # ⭐ Now includes cumulative_constraints
                     "available_colors": self.puzzle.get("available_colors", []),
                     "num_pegs": self.puzzle.get("pegs", 4),
+                    "round_num": round_num,
                 }
             )
 
@@ -202,23 +277,44 @@ class TwoAgentOrchestrator:
             raise
 
         try:
-            # Extract guesses
-            guesses = [r["guess"] for r in team_results]
-            print(f"[DEBUG] Extracted guesses: {guesses}")
+            # ⭐ PARALLEL INDEPENDENT RACING: Extract guesses from both teams
+            guesses_by_team = {r["team_id"]: r["guess"] for r in team_results}
+            print(f"[DEBUG] Team guesses extracted: {guesses_by_team}")
             sys.stdout.flush()
 
-            # FIRST: Submit top team's guess to get feedback
-            # For now, just use Team 1's guess (or better: use Judge to pick)
-            # TODO: Let judge pick which team's guess to submit
-            top_team_id = 1  # Default to Team 1
-            top_guess = guesses[top_team_id - 1]
-
-            print(f"[DEBUG] Submitting Team {top_team_id}'s guess: {top_guess}")
+            # ⭐ SUBMIT BOTH GUESSES IN PARALLEL to separate game engines
+            print(f"[Round {round_num}] Submitting both teams' guesses SIMULTANEOUSLY...")
             sys.stdout.flush()
 
-            feedback = self.game_engine.submit_guess(top_guess)
-            print(f"[DEBUG] Got feedback: {feedback}")
-            sys.stdout.flush()
+            feedback_by_team = {}
+            for team_id in range(1, self.NUM_TEAMS + 1):
+                guess = guesses_by_team[team_id]
+                feedback = self.team_game_engines[team_id].submit_guess(guess)
+                feedback_by_team[team_id] = feedback
+                print(f"[DEBUG] Team {team_id} feedback: {feedback.get('feedback', {})}")
+
+                # ⭐ ACTIVE LEARNING: Call reflect_on_feedback to build learned hypotheses
+                try:
+                    reflect_msg = A2AMessage.request(
+                        sender_id="orchestrator",
+                        receiver_id=f"proposer-{team_id}",
+                        action="reflect_on_feedback",
+                        payload={
+                            "round_num": round_num,
+                            "guess": guess,
+                            "feedback": feedback.get("feedback", {}),
+                        }
+                    )
+                    await client.post(
+                        self.team_proposer_urls[team_id] + "/reflect_on_feedback",
+                        json=reflect_msg.to_dict(),
+                        timeout=30.0
+                    )
+                except Exception as e:
+                    print(f"[DEBUG] Team {team_id} reflection failed (non-critical): {e}")
+
+                sys.stdout.flush()
+
         except Exception as e:
             print(f"[ERROR] Processing results: {e}")
             import traceback
@@ -226,87 +322,94 @@ class TwoAgentOrchestrator:
             sys.stdout.flush()
             raise
 
-        if not feedback.get("valid", False):
-            print(f"[ERROR] Invalid guess: {feedback.get('error', 'Unknown error')}")
-            return False
+        # Validate all guesses
+        for team_id, feedback in feedback_by_team.items():
+            if not feedback.get("valid", False):
+                print(f"[ERROR] Team {team_id} invalid guess: {feedback.get('error', 'Unknown error')}")
 
-        # SECOND: Now rank teams with actual feedback
-        if self.judge:
-            ranking = self.judge.rank_teams(
-                team_results=[
-                    {
-                        "team_id": r["team_id"],
-                        "guess": r["guess"],
-                        "feedback": feedback.get("feedback", {}),  # NOW we have actual feedback!
-                    }
-                    for r in team_results
-                ],
-                all_team_histories=self.team_histories,
-                pegs_to_solve=self.puzzle.get("pegs", 4),
-            )
-        else:
-            # Hardcoded ranking when Judge unavailable
-            ranking = []
-            for r in team_results:
-                team_id = r["team_id"]
-                correct_pos = feedback.get("feedback", {}).get("correct_positions", 0)
-                distance = self.puzzle.get("pegs", 4) - correct_pos
-                ranking.append({
-                    "team_id": team_id,
-                    "rank": len(ranking) + 1,
-                    "distance": distance,
-                    "correct_positions": correct_pos,
-                    "correct_pegs": feedback.get("feedback", {}).get("correct_pegs", 0),
-                    "competitive_analysis": {},
-                    "strategic_advice": "Focus on locking positions systematically.",
-                })
-
-        print(f"[DEBUG] Ranking computed: {len(ranking)} teams")
-        sys.stdout.flush()
-
-        # Update histories
+        # ⭐ BUILD LEADERBOARD: Show each team's progress (NO ranking, NO interference)
+        leaderboard = []
         for team_id in range(1, self.NUM_TEAMS + 1):
+            feedback = feedback_by_team[team_id]
+            game_fb = feedback.get("feedback", {})
+            correct_pegs = game_fb.get("correct_pegs", 0)
+            correct_positions = game_fb.get("correct_positions", 0)
+            solved = feedback.get("solved", False)
+
+            # Update solve status
+            if solved and not self.team_solved[team_id]:
+                self.team_solved[team_id] = True
+                self.team_solve_round[team_id] = round_num
+                print(f"🏆 Team {team_id} SOLVED in round {round_num}!")
+
+            leaderboard.append({
+                "team_id": team_id,
+                "round": round_num,
+                "guess": guesses_by_team[team_id],
+                "correct_pegs": correct_pegs,
+                "correct_positions": correct_positions,
+                "solved": solved,
+            })
+
+        # ⭐ Judge provides competitive feedback (optional LLM analysis)
+        competitive_feedback = {}
+        if self.judge:
             try:
-                your_rank_data = next(r for r in ranking if r["team_id"] == team_id)
+                competitive_feedback = self.judge.generate_leaderboard_feedback(
+                    leaderboard=leaderboard,
+                    all_team_histories=self.team_histories,
+                    pegs_to_solve=self.puzzle.get("pegs", 4),
+                )
+            except Exception as e:
+                print(f"[DEBUG] Judge feedback failed (non-critical): {e}")
 
-                team_feedback = {
-                    "your_distance": your_rank_data.get("distance", 0),
-                    "your_rank": your_rank_data.get("rank", 0),
-                    "game_feedback": feedback.get("feedback", {}),
-                    "competitive_analysis": your_rank_data.get("competitive_analysis", {}),
-                    "strategic_advice": your_rank_data.get("strategic_advice", ""),
-                    "round": round_num,
-                }
+        # Update histories (each team gets ONLY their own feedback + leaderboard)
+        for team_id in range(1, self.NUM_TEAMS + 1):
+            feedback = feedback_by_team[team_id]
+            game_fb = feedback.get("feedback", {})
 
-                self.team_histories[team_id].append({
-                    "round": round_num,
-                    "guess": guesses[team_id - 1],
-                    "result": feedback.get("feedback", {}),
-                    "ranking": ranking,
-                })
+            team_feedback = {
+                "correct_pegs": game_fb.get("correct_pegs", 0),
+                "correct_positions": game_fb.get("correct_positions", 0),
+                "solved": feedback.get("solved", False),
+                "round": round_num,
+                # ⭐ Leaderboard shows opponent's progress (no guess details, just round count)
+                "leaderboard": [
+                    {
+                        "team": f"Team {item['team_id']}",
+                        "round": item['round'],
+                        "colors_found": item['correct_pegs'],
+                        "positions_locked": item['correct_positions'],
+                        "solved": item['solved'],
+                    }
+                    for item in leaderboard
+                ],
+                "competitive_feedback": competitive_feedback.get(f"team_{team_id}", ""),
+            }
 
-                self.team_last_feedback[team_id] = team_feedback
-            except StopIteration:
-                print(f"[WARNING] Team {team_id} not found in ranking")
-                sys.stdout.flush()
+            self.team_histories[team_id].append({
+                "round": round_num,
+                "guess": guesses_by_team[team_id],
+                "result": game_fb,
+                "solved": feedback.get("solved", False),
+            })
 
-        # Print results
-        ranking_str = ", ".join([
-            f"Team {r['team_id']} ({r['rank']}{'st' if r['rank']==1 else 'nd'} - d:{r['distance']})"
-            for r in ranking
-        ])
-        print(f"[Round {round_num}] RANKING: {ranking_str}")
-        
-        game_fb = feedback.get("feedback", {})
-        pegs = game_fb.get("correct_pegs", 0)
-        positions = game_fb.get("correct_positions", 0)
-        print(f"[Round {round_num}] Submitted Team {top_team_id}'s guess: {top_guess} → pegs={pegs}, pos={positions}", end="")
+            self.team_last_feedback[team_id] = team_feedback
+            sys.stdout.flush()
 
-        if feedback.get("solved", False):
-            print(" ✅ SOLVED!")
+        # Print leaderboard
+        print(f"\n[Round {round_num}] 📊 LEADERBOARD:")
+        for item in leaderboard:
+            status = "✅ SOLVED" if item["solved"] else f"{item['correct_pegs']}P/{item['correct_positions']}L"
+            print(f"  Team {item['team_id']}: {status}")
+
+        # Check if any team has solved
+        any_solved = any(self.team_solved.values())
+        if any_solved:
+            winner_id = next(team_id for team_id in range(1, self.NUM_TEAMS + 1) if self.team_solved[team_id])
+            print(f"\n🏆 Team {winner_id} WINS in round {self.team_solve_round[winner_id]}!")
             return True
         else:
-            print()
             return False
 
     async def _run_async_loop(self) -> bool:
@@ -334,21 +437,31 @@ class TwoAgentOrchestrator:
 
         elapsed_time = time.time() - self.start_time
 
+        # ⭐ Determine winner (first team to solve)
+        winner_id = None
+        winning_round = None
+        for team_id in range(1, self.NUM_TEAMS + 1):
+            if self.team_solved[team_id]:
+                winner_id = team_id
+                winning_round = self.team_solve_round[team_id]
+                break
+
         return {
             "success": solved,
-            "rounds": len(self.team_histories[1]),
-            "time": elapsed_time,
+            "winner": winner_id,
+            "winning_round": winning_round,
+            "paradigm": "parallel_independent_racing",
             "teams": {
                 team_id: {
+                    "rounds": len(self.team_histories[team_id]),
                     "guesses": len(self.team_histories[team_id]),
-                    "final_rank": next(
-                        (r["rank"] for r in self.team_histories[team_id][-1].get("ranking", [])
-                         if r["team_id"] == team_id),
-                        "N/A"
-                    ) if self.team_histories[team_id] else "N/A",
+                    "solved": self.team_solved[team_id],
+                    "solve_round": self.team_solve_round[team_id],
+                    "final_stats": self.team_histories[team_id][-1].get("result", {}) if self.team_histories[team_id] else {},
                 }
                 for team_id in range(1, self.NUM_TEAMS + 1)
             },
+            "time": elapsed_time,
         }
 
 
@@ -362,7 +475,7 @@ if __name__ == "__main__":
     puzzle = next((p for p in puzzles if p['puzzle_id'] == 'MM_001'), puzzles[0])
 
     print("\n" + "=" * 80)
-    print("2-AGENT JUDGE-MEDIATED SPEED RACING (2 Teams)")
+    print("PARALLEL INDEPENDENT RACING (2 Teams, 2 Agents Each)")
     print("=" * 80)
     print(f"\nTesting puzzle: {puzzle['puzzle_id']}")
     print(f"Difficulty: {puzzle['difficulty']}")
@@ -375,11 +488,15 @@ if __name__ == "__main__":
     print("GAME OVER")
     print("=" * 80)
     if result["success"]:
-        print(f"✅ SOLVED in {result['rounds']} rounds!")
+        print(f"✅ Team {result['winner']} SOLVED in {result['winning_round']} rounds!")
     else:
-        print(f"❌ NOT SOLVED after {result['rounds']} round(s)")
+        print(f"❌ NO WINNER - Not solved after max rounds")
 
+    print(f"\n📊 FINAL RESULTS:")
     for team_id, stats in result["teams"].items():
-        print(f"  Team {team_id}: {stats['guesses']} guess(es), final rank: {stats['final_rank']}")
+        status = "✅ SOLVED" if stats["solved"] else "❌ Not solved"
+        solve_round = stats["solve_round"] if stats["solve_round"] else "N/A"
+        print(f"  Team {team_id}: {stats['rounds']} rounds, {status} (Round {solve_round})")
 
     print(f"\nTotal time: {result['time']:.1f} seconds")
+    print(f"Paradigm: {result['paradigm']}")

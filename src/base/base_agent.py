@@ -1,7 +1,7 @@
 # Base Agent Class
 # Abstract base for all agents (Strategist, Analyzer, Proposer, Validator)
 # Handles LLM calls, error handling, response parsing
-# Supports Kaggle (primary), Ollama (local), or Claude API
+# Supports Kaggle, DeepSeek, Groq, Claude, or OpenAI
 # Uses A2A protocol for agent-to-agent communication
 # NEW: Explicit role awareness for 30-50% better coordination (Adimulam et al. 2026)
 
@@ -104,7 +104,7 @@ class BaseAgent(ABC):
     """Base class for all worker agents.
 
     Provides:
-    - LLM interface (Ollama or Claude)
+    - LLM interface (DeepSeek, Groq, Claude, OpenAI, or Kaggle)
     - Response parsing (JSON)
     - Error handling
     - Token tracking (optional)
@@ -116,7 +116,7 @@ class BaseAgent(ABC):
         self,
         name: str,
         model: str = "mistral",
-        provider: str = "ollama",
+        provider: str = "deepseek",
         comm_layer: Optional[A2ACommunicationLayer] = None,
         # NEW: Role awareness parameters (Adimulam et al. 2026)
         role: Optional[AgentRole] = None,
@@ -131,8 +131,8 @@ class BaseAgent(ABC):
 
         Args:
             name: Agent name (e.g., "Strategist", "Analyzer")
-            model: Model identifier (e.g., "mistral" for Ollama, "claude-3-sonnet" for Claude)
-            provider: "ollama" (dev) or "claude" (final)
+            model: Model identifier
+            provider: "deepseek", "groq", "claude", "openai", or "kaggle"
             comm_layer: A2A communication layer for agent-to-agent interaction
             role: Explicit agent role (NEW: for 30-50% better coordination)
             paradigm: Explicit paradigm type (NEW: for role awareness)
@@ -252,11 +252,6 @@ class BaseAgent(ABC):
                 "base_url": "https://api.openai.com/v1",
             }
             print(f"[{self.name}] OpenAI o3-mini ready")
-        elif self.provider == "ollama":
-            # Use phi3.5 by default (top performer in MastermindEval ICLR 2025)
-            ollama_model = self.model if self.model != "mistral" else "phi3.5"
-            self.llm = type("OllamaConfig", (), {"model": ollama_model})()
-            print(f"[{self.name}] Ollama: model={ollama_model} (local, free)")
         elif self.provider == "claude":
             try:
                 from anthropic import Anthropic
@@ -288,34 +283,7 @@ class BaseAgent(ABC):
             print(f"[{self.name}] DEBUG: Using provider '{self.provider}', model '{model}'")
             self._first_call = True
 
-        if self.provider == "ollama":
-            # Ollama: use native chat API for proper multi-turn conversation
-            import requests as _req
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(self.conversation[-50:])
-            messages.append({"role": "user", "content": user_message})
-            self.call_count += 1
-            response = None
-            for attempt in range(3):
-                try:
-                    resp = _req.post(
-                        "http://localhost:11434/api/chat",
-                        json={
-                            "model": getattr(self.llm, 'model', 'phi3.5'),
-                            "messages": messages,
-                            "stream": False,
-                        },
-                        timeout=300,
-                    )
-                    if resp.status_code == 200:
-                        response = resp.json()["message"]["content"]
-                        break
-                    else:
-                        print(f"[{self.name}] Ollama error {resp.status_code}: {resp.text[:100]}")
-                except Exception as e:
-                    print(f"[{self.name}] Ollama error (attempt {attempt+1}/3): {e}")
-                    time.sleep(5)
-        elif self.provider not in ("groq", "deepseek", "openai"):
+        if self.provider not in ("groq", "deepseek", "openai"):
             # Fallback for other providers: flatten to single prompt
             history_text = ""
             for msg in self.conversation[-10:]:
@@ -327,7 +295,7 @@ class BaseAgent(ABC):
             # Groq / DeepSeek: true multi-turn — pass prior messages
             # Use a larger window (50 messages ≈ 25 turns) to maintain context across rounds
             messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(self.conversation[-50:])  # last 50 messages max (~25 turns)
+            messages.extend(self.conversation[-6:])  # last 6 messages (3 turns) — prevents token explosion on long puzzles
             messages.append({"role": "user", "content": user_message})
 
             self.call_count += 1
@@ -398,19 +366,29 @@ class BaseAgent(ABC):
                         print(f"[{self.name}] OpenAI error (attempt {attempt+1}/3): {str(e)}")
                         time.sleep(5)
             elif self.provider == "deepseek":
-                # DeepSeek single key, retry on failure
-                for attempt in range(2):  # 2 attempts × 90s = 180s max
+                # DeepSeek: 3-attempt strategy with progressive fallback on timeout
+                #   Attempt 1: full prompt,  6000 tokens, 90s
+                #   Attempt 2: last msg only, 2000 tokens, 45s  (timeout fallback)
+                #   Attempt 3: minimal prompt, 500 tokens,  20s  (last resort)
+                ATTEMPT_CONFIGS = [
+                    {"messages": messages,                  "max_tokens": 6000, "timeout": 90},
+                    {"messages": messages[-2:],             "max_tokens": 2000, "timeout": 45},
+                    {"messages": [messages[-1]],            "max_tokens": 500,  "timeout": 20},
+                ]
+                for attempt, cfg in enumerate(ATTEMPT_CONFIGS):
                     try:
+                        if attempt > 0:
+                            print(f"[{self.name}] DeepSeek timeout — retrying with shorter prompt (attempt {attempt+1}/3)")
                         resp = _req.post(
                             f"{self.llm['base_url']}/chat/completions",
                             headers={"Authorization": f"Bearer {self.llm['api_key']}"},
                             json={
                                 "model": self.llm["model"],
-                                "messages": messages,
-                                "max_tokens": 16000,  # R1 needs space for reasoning chain
+                                "messages": cfg["messages"],
+                                "max_tokens": cfg["max_tokens"],
                                 "temperature": 0.6,
                             },
-                            timeout=90,  # 90s — R1 rarely needs more; avoids 18-min hangs
+                            timeout=cfg["timeout"],
                         )
                         if resp.status_code == 200:
                             resp_json = resp.json()
@@ -423,7 +401,6 @@ class BaseAgent(ABC):
                                 output_tokens = resp_json["usage"].get("completion_tokens", 0)
                                 self.total_input_tokens += input_tokens
                                 self.total_output_tokens += output_tokens
-                                print(f"[{self.name}] Tokens: input={input_tokens}, output={output_tokens}, cumulative_input={self.total_input_tokens}, cumulative_output={self.total_output_tokens}")
 
                             break
                         elif resp.status_code == 429:
@@ -433,8 +410,9 @@ class BaseAgent(ABC):
                         else:
                             resp.raise_for_status()
                     except Exception as e:
-                        print(f"[{self.name}] DeepSeek error: {e}")
-                        time.sleep(5)
+                        print(f"[{self.name}] DeepSeek error (attempt {attempt+1}/3): {e}")
+                        if attempt < 2:
+                            time.sleep(2)  # brief pause before retry with shorter prompt
             else:
                 # Groq: rotate through keys
                 keys = self.llm["keys"]
@@ -482,9 +460,13 @@ class BaseAgent(ABC):
             if response is None:
                 raise RuntimeError(f"LLM call failed after all attempts")
 
-        # Store in conversation thread
+        # Store in conversation thread — only keep the JSON answer, not the full
+        # reasoning chain (R1 reasoning dumps are huge and cause token explosion)
+        import re as _re
+        json_match = _re.search(r'\{.*\}', response, _re.DOTALL)
+        stored_response = json_match.group(0)[:1000] if json_match else response[:500]
         self.conversation.append({"role": "user",      "content": user_message})
-        self.conversation.append({"role": "assistant",  "content": response})
+        self.conversation.append({"role": "assistant",  "content": stored_response})
 
         # DEBUG: Check actual response length BEFORE logging truncation
         if len(response) < 1000:
@@ -648,9 +630,6 @@ class BaseAgent(ABC):
                         time.sleep(5)
                 else:
                     raise RuntimeError("OpenAI API failed after 3 attempts")
-            elif self.provider == "ollama":
-                # OllamaLLM uses invoke() method
-                response = self.llm.invoke(prompt)
             elif self.provider == "claude":
                 message = self.llm.messages.create(
                     model="claude-3-5-sonnet-20241022",

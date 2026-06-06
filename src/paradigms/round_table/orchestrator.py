@@ -65,6 +65,9 @@ class RoundTableOrchestrator:
         self.last_validation: Optional[Dict[str, Any]] = None
         self.validation_received = threading.Event()
 
+        # Track server thread for cleanup
+        self.server_thread: Optional[threading.Thread] = None
+
 
 
     async def _start_servers(self) -> None:
@@ -119,11 +122,11 @@ class RoundTableOrchestrator:
                 log_level="error",
             )
 
-        thread = threading.Thread(target=run_orch_server, daemon=True)
-        thread.start()
+        self.server_thread = threading.Thread(target=run_orch_server, daemon=True)
+        self.server_thread.start()
 
         # Wait for orchestrator to be ready
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
 
         # Pass orchestrator URL to agents via environment variable
         os.environ["ORCHESTRATOR_URL"] = self.orchestrator_url
@@ -192,7 +195,7 @@ class RoundTableOrchestrator:
                 payload={
                     "last_guess":       guess_history[-1]["guess"] if guess_history else [],
                     "feedback":         feedback,
-                    "guess_history":    guess_history,        # full history — shared truth
+                    "guess_history":    guess_history[-4:],   # last 4 guesses only — prevents prompt explosion
                     "available_colors": self.puzzle.get("available_colors", []),
                     "difficulty":       self.puzzle.get("difficulty", "easy"),
                     "num_pegs":         self.puzzle.get("pegs", 4),
@@ -345,13 +348,37 @@ class RoundTableOrchestrator:
             print(f"Elapsed: {result['elapsed_time']:.1f}s")
             print("="*70 + "\n")
 
+            # Explicit cleanup before returning
+            await self._cleanup_resources()
+
             return result
 
         except Exception as e:
             print(f"[Orchestrator] Fatal error: {e}")
             import traceback
             traceback.print_exc()
+            # Still try to cleanup on error
+            try:
+                await self._cleanup_resources()
+            except:
+                pass
             raise
+
+    async def _cleanup_resources(self) -> None:
+        """Cleanup resources between puzzle runs."""
+        import gc
+
+        try:
+            # Clear validation state
+            self.last_validation = None
+            self.validation_received.clear()
+
+            # Garbage collection
+            gc.collect()
+            await asyncio.sleep(1.0)
+
+        except Exception as cleanup_error:
+            print(f"[Orchestrator] Cleanup error (non-fatal): {cleanup_error}")
 
 
 # ── Main entrypoint ─────────────────────────────────────────────────────────

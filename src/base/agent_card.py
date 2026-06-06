@@ -55,7 +55,7 @@ class AgentCard:
     team_members: List[str] = None
 
     # Configuration
-    provider: str = "ollama"
+    provider: str = "deepseek"
     model: str = "mistral"
     timeout: int = 60
 

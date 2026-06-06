@@ -1,19 +1,7 @@
-# Boss-Worker Paradigm Module
+# Direct Debate Paradigm Module
 
-from paradigms.direct_debate.agents import (
-    AnalyzerAgent,
-    StrategistAgent,
-    ProposerAgent,
-    ValidatorAgent,
-    LoggerAgent,
-    MetricsAgent,
-)
+from paradigms.direct_debate.orchestrator import DirectDebateOrchestrator
 
 __all__ = [
-    "AnalyzerAgent",
-    "StrategistAgent",
-    "ProposerAgent",
-    "ValidatorAgent",
-    "LoggerAgent",
-    "MetricsAgent",
+    "DirectDebateOrchestrator",
 ]

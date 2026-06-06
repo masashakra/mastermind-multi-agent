@@ -1,19 +1,15 @@
-# Boss-Worker Paradigm Module
+# Judge-Mediated Paradigm Module (Simplified - 1 Agent Per Team)
 
 from paradigms.judge_mediated.agents import (
-    AnalyzerAgent,
-    StrategistAgent,
-    ProposerAgent,
-    ValidatorAgent,
+    TeamAgent,
+    JudgeAgent,
     LoggerAgent,
     MetricsAgent,
 )
 
 __all__ = [
-    "AnalyzerAgent",
-    "StrategistAgent",
-    "ProposerAgent",
-    "ValidatorAgent",
+    "TeamAgent",
+    "JudgeAgent",
     "LoggerAgent",
     "MetricsAgent",
 ]

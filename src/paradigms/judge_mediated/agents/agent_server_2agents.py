@@ -113,6 +113,7 @@ def create_proposer_app(team_id: int, provider: str) -> FastAPI:
                 strategy=payload.get("strategy", {}),
                 available_colors=payload.get("available_colors", []),
                 num_pegs=payload.get("num_pegs", 4),
+                round_num=payload.get("round_num", 1),  # ⭐ CRITICAL: Pass round_num for logging
             )
 
             response_msg = A2AMessage.response(
@@ -127,6 +128,26 @@ def create_proposer_app(team_id: int, provider: str) -> FastAPI:
         except Exception as e:
             print(f"[ERROR] Proposer Team {team_id}: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/reflect_on_feedback")
+    def reflect_on_feedback(body: Dict[str, Any]) -> Dict[str, Any]:
+        """Reflect on feedback to build learned hypotheses (Active Learning)."""
+        try:
+            round_num = body.get("round_num", 1)
+            guess = body.get("guess", [])
+            feedback = body.get("feedback", {})
+
+            # ⭐ ACTIVE LEARNING: Agent processes feedback to accumulate knowledge
+            agent.reflect_on_feedback(round_num, guess, feedback)
+
+            return {
+                "status": "ok",
+                "message": f"Reflected on Round {round_num} feedback",
+                "learned_hypotheses_count": len(agent.learned_hypotheses),
+            }
+        except Exception as e:
+            print(f"[ERROR] Proposer Team {team_id} reflect: {str(e)}")
+            return {"status": "error", "message": str(e)}
 
     @app.get("/health")
     def health():

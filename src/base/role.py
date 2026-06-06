@@ -45,6 +45,8 @@ class ParadigmType(Enum):
     DIRECT_ADVERSARIAL = "direct_adversarial"
     MODERATOR_MEDIATED = "moderator_mediated"
     DIRECT_DEBATE = "direct_debate"
+    COOPETITION_CENTRALIZED = "coopetition_centralized"
+    COOPETITION_PEER_TO_PEER = "coopetition_peer_to_peer"
 
     def __str__(self) -> str:
         return self.value
@@ -57,7 +59,9 @@ class ParadigmType(Enum):
             "judge_mediated": "Judge evaluates and selects each agent's solution",
             "direct_adversarial": "Agents compete directly against each other",
             "moderator_mediated": "Moderator arbitrates and coordinates between agents",
-            "direct_debate": "Agents debate and discuss solutions directly"
+            "direct_debate": "Agents debate and discuss solutions directly",
+            "coopetition_centralized": "2 teams collaborate on same puzzle with Judge overseeing debate (ReConcile approach)",
+            "coopetition_peer_to_peer": "2 teams collaborate on same puzzle with peer-to-peer debate and voting (ReConcile approach)"
         }
         return descriptions.get(self.value, "Unknown paradigm")
 
@@ -67,7 +71,9 @@ class ParadigmType(Enum):
         communicating = {
             ParadigmType.BOSS_WORKER,
             ParadigmType.JUDGE_MEDIATED,
-            ParadigmType.MODERATOR_MEDIATED
+            ParadigmType.MODERATOR_MEDIATED,
+            ParadigmType.COOPETITION_CENTRALIZED,
+            ParadigmType.COOPETITION_PEER_TO_PEER,
         }
         return self in communicating
 

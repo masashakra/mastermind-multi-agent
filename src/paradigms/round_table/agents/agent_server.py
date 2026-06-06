@@ -67,7 +67,7 @@ def _convert_card_to_a2a(card: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _wait_for_healthy(url: str, retries: int = 25, delay: float = 0.3) -> None:
+def _wait_for_healthy(url: str, retries: int = 60, delay: float = 0.2) -> None:
     for _ in range(retries):
         try:
             r = httpx.get(f"{url}/health", timeout=2.0)
@@ -112,10 +112,7 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
         "paradigm": "round_table"
     })
 
-    @app.on_event("startup")
-    async def startup():
-        """Register with registry on startup."""
-        _register_with_registry(registry_url, card)
+
 
     @app.get("/health")
     async def health():
@@ -131,6 +128,11 @@ def create_analyzer_app(provider: str, registry_url: str, self_url: str) -> Fast
         try:
             request_data = await request.json()
             msg = A2AMessage.from_dict(request_data)
+
+            # Reset conversation on round 1 — fresh puzzle, fresh memory
+            guess_history_check = msg.payload.get("guess_history", [])
+            if len(guess_history_check) == 0:
+                agent.conversation = []
 
             # Log received message in memory
             agent.memory.receive_message(
@@ -308,9 +310,7 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
         "paradigm": "round_table"
     })
 
-    @app.on_event("startup")
-    async def startup():
-        _register_with_registry(registry_url, card)
+
 
     @app.get("/health")
     async def health():
@@ -326,6 +326,11 @@ def create_strategist_app(provider: str, registry_url: str, self_url: str) -> Fa
         try:
             request_data = await request.json()
             msg = A2AMessage.from_dict(request_data)
+
+            # Reset conversation on round 1 — fresh puzzle, fresh memory
+            guess_history_check = msg.payload.get("guess_history", [])
+            if len(guess_history_check) == 0:
+                agent.conversation = []
 
             # Log received message in memory
             agent.memory.receive_message(
@@ -514,9 +519,7 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
         "paradigm": "round_table"
     })
 
-    @app.on_event("startup")
-    async def startup():
-        _register_with_registry(registry_url, card)
+
 
     @app.get("/health")
     async def health():
@@ -532,6 +535,11 @@ def create_proposer_app(provider: str, registry_url: str, self_url: str) -> Fast
         try:
             request_data = await request.json()
             msg = A2AMessage.from_dict(request_data)
+
+            # Reset conversation on round 1 — fresh puzzle, fresh memory
+            guess_history_check = msg.payload.get("guess_history", [])
+            if len(guess_history_check) == 0:
+                agent.conversation = []
 
             # Log received message in memory
             agent.memory.receive_message(
@@ -770,9 +778,7 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
         "paradigm": "round_table"
     })
 
-    @app.on_event("startup")
-    async def startup():
-        _register_with_registry(registry_url, card)
+
 
     @app.get("/health")
     async def health():
@@ -802,7 +808,7 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
             if msg.is_question:
                 guess = msg.payload.get("guess", msg.payload.get("proposed_guess", []))
                 available_colors = msg.payload.get("available_colors", [])
-                expected_length = msg.payload.get("expected_length", 4)
+                expected_length = msg.payload.get("expected_length") or msg.payload.get("num_pegs") or 4
                 guess_history = msg.payload.get("guess_history", [])
                 constraints = msg.payload.get("constraints", {})
 
@@ -824,7 +830,7 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
             guess = msg.payload.get("guess", msg.payload.get("proposed_guess", []))
             available_colors = msg.payload.get("available_colors", [])
-            expected_length = msg.payload.get("expected_length", 4)
+            expected_length = msg.payload.get("expected_length") or msg.payload.get("num_pegs") or 4
             guess_history = msg.payload.get("guess_history", [])
             constraints = msg.payload.get("constraints", {})
 
@@ -856,30 +862,29 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
             if is_valid:
                 print(f"[Validator] ✓ Valid guess! Sending to orchestrator...")
-                # Send to orchestrator's /receive_validation endpoint (fire-and-forget)
-                async def send_to_orchestrator():
-                    try:
-                        import os
-                        async with httpx.AsyncClient(timeout=10.0) as client:
-                            # Get orchestrator URL from environment or use default
-                            orch_url = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8107")
+                # Send to orchestrator's /receive_validation endpoint
+                try:
+                    import os
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        # Get orchestrator URL from environment or use default
+                        orch_url = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8107")
 
-                            orch_msg = A2AMessage.request(
-                                sender_id="validator_round_table",
-                                receiver_id="orchestrator_round_table",
-                                action="receive_validation",
-                                payload=result
-                            )
-                            orch_resp = await client.post(
-                                f"{orch_url}/receive_validation",
-                                json=orch_msg.to_dict(),
-                                timeout=10.0
-                            )
-                            print(f"[Validator] Orchestrator received validation (status={orch_resp.status_code})")
-                    except Exception as e:
-                        print(f"[Validator] Error sending to orchestrator: {e}")
-
-                asyncio.create_task(send_to_orchestrator())
+                        orch_msg = A2AMessage.request(
+                            sender_id="validator_round_table",
+                            receiver_id="orchestrator_round_table",
+                            action="receive_validation",
+                            payload=result
+                        )
+                        orch_resp = await client.post(
+                            f"{orch_url}/receive_validation",
+                            json=orch_msg.to_dict(),
+                            timeout=30.0
+                        )
+                        print(f"[Validator] ✓ Orchestrator received validation (status={orch_resp.status_code})")
+                except Exception as e:
+                    print(f"[Validator] ❌ Error sending to orchestrator: {e}")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print(f"[Validator] ✗ Invalid guess, autonomously deciding next step...")
 
@@ -984,56 +989,80 @@ def create_validator_app(provider: str, registry_url: str, self_url: str) -> Fas
 
 # ── Server startup ─────────────────────────────────────────────────────────────
 
+def _get_free_port() -> int:
+    """Get a free port from the OS."""
+    import socket as _socket
+    s = _socket.socket()
+    s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
 def start_agent_servers(
     provider: str,
     registry_url: str,
-    base_port: int = 8101,
+    base_port: int = 8101,  # ignored — each agent picks its own free port
 ) -> Dict[str, str]:
     """Start all agent HTTP servers and wait for them to be healthy.
 
-    Args:
-        provider: LLM provider ("ollama", "kaggle", "claude", etc.)
-        registry_url: URL of registry server
-        base_port: Starting port (analyzer=base_port, strategist=+1, etc.)
-
-    Returns:
-        Dict mapping agent type to URL (e.g., {"analyzer": "http://localhost:8101"})
+    Each agent picks its own free port from the OS to avoid conflicts.
     """
     servers = {}
-    apps = {}
 
-    agents = [
-        ("analyzer", create_analyzer_app, base_port),
-        ("strategist", create_strategist_app, base_port + 1),
-        ("proposer", create_proposer_app, base_port + 2),
-        ("validator", create_validator_app, base_port + 3),
+    agent_configs = [
+        ("analyzer",   create_analyzer_app),
+        ("strategist", create_strategist_app),
+        ("proposer",   create_proposer_app),
+        ("validator",  create_validator_app),
     ]
 
-    for agent_type, create_app_func, port in agents:
+    for agent_type, create_app_func in agent_configs:
+        # Let OS pick a free port
+        port = _get_free_port()
         url = f"http://localhost:{port}"
 
-        # Create app
+        # Create app (pass registry_url=None to skip startup registration)
         app = create_app_func(
             provider=provider,
             registry_url=registry_url,
             self_url=url,
         )
-        apps[agent_type] = app
 
         # Start server in background thread
-        def run_server(agent_type=agent_type, app=app, port=port):
-            uvicorn.run(
-                app,
-                host="127.0.0.1",
-                port=port,
-                log_level="error",
-            )
+        def run_server(app=app, port=port):
+            uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
 
         thread = threading.Thread(target=run_server, daemon=True)
         thread.start()
 
-        # Wait for server to be healthy
+        # Wait for server to be healthy (server accepts connections first)
         _wait_for_healthy(url)
+
+        # Register with registry AFTER server is healthy using proper card format
+        agent_cards = {
+            "analyzer":  ANALYZER_CARD,
+            "strategist": STRATEGIST_CARD,
+            "proposer":  PROPOSER_CARD,
+            "validator": VALIDATOR_CARD,
+        }
+        raw_card = agent_cards[agent_type]
+        card_data = _convert_card_to_a2a({
+            **raw_card,
+            "url": url,
+            "agent_type": agent_type,
+            "paradigm": "round_table",
+        })
+        for attempt in range(5):
+            try:
+                r = httpx.post(f"{registry_url}/register", json=card_data, timeout=5.0)
+                if r.status_code == 200:
+                    print(f"[Registry] ✓ Registered: {agent_type}_round_table @ {url}")
+                    break
+            except Exception:
+                time.sleep(0.3)
+
         servers[agent_type] = url
         print(f"[AgentServer] {agent_type} running at {url}")
 

@@ -32,12 +32,12 @@ class DirectAdversarialOrchestrator:
     - Competitive coordination without mediation
     """
 
-    def __init__(self, puzzle: Dict[str, Any], provider: str = "ollama"):
+    def __init__(self, puzzle: Dict[str, Any], provider: str = "deepseek"):
         """Initialize orchestrator for one puzzle
 
         Args:
             puzzle: Puzzle dictionary from puzzle_generator
-            provider: LLM provider ("ollama", "groq", "claude", "kaggle")
+            provider: LLM provider ("deepseek", "groq", "claude", "kaggle")
         """
         self.puzzle = puzzle
         self.provider = provider
@@ -314,7 +314,7 @@ if __name__ == "__main__":
         print(f"\nTesting puzzle: {test_puzzle['puzzle_id']}")
         print(f"Difficulty: {test_puzzle['difficulty']}")
 
-        orchestrator = DirectAdversarialOrchestrator(test_puzzle, provider="ollama")
+        orchestrator = DirectAdversarialOrchestrator(test_puzzle, provider="deepseek")
         result = orchestrator.run()
 
         print(f"\nResult:")

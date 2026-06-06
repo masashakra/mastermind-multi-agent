@@ -49,7 +49,7 @@ class BossWorkerOrchestrator:
 
     MAX_ROUNDS = 8
 
-    def __init__(self, puzzle: Dict[str, Any], provider: str = "ollama"):
+    def __init__(self, puzzle: Dict[str, Any], provider: str = "deepseek", run_tag: str = ""):
         self.puzzle   = puzzle
         self.provider = provider
         self.paradigm = "boss_worker"
@@ -59,7 +59,8 @@ class BossWorkerOrchestrator:
 
         # ── Initialize message logger (same mechanism as Round-Table) ─────────
         puzzle_id = puzzle.get("puzzle_id", "unknown")
-        log_file  = f"logs/{puzzle_id}_boss_worker_{provider}_messages.log"
+        tag       = f"_{run_tag}" if run_tag else ""
+        log_file  = f"logs/{puzzle_id}_boss_worker_{provider}{tag}_messages.log"
         from communication.message_logger import init_message_logger
         self.message_logger = init_message_logger(log_file)
         print(f"[Orchestrator] Logging to {log_file}")

@@ -58,7 +58,7 @@ class BossAgent(BaseAgent):
 
     def __init__(
         self,
-        provider: str = "ollama",
+        provider: str = "deepseek",
         comm_layer: Optional[Any] = None,
         registry_url: Optional[str] = None,
     ):
@@ -215,13 +215,15 @@ class BossAgent(BaseAgent):
 
                         if response_msg.status == A2AStatus.OK:
                             print(f"[Boss] ✓ Analyzer analysis received (msg_id: {response_msg.message_id}, trace: {response_msg.response_to})")
+                            result_payload = response_msg.payload or {}
                             _logger.log_a2a_receive(
                                 agent_name="Boss", message_id=response_msg.message_id,
                                 sender_id="analyzer_boss_worker", receiver_id="boss_boss_worker",
-                                action="analyze", payload=response_msg.payload or {},
+                                action="analyze_response",
+                                payload=result_payload,
                                 is_reply=True, reply_to_id=msg.message_id,
                             )
-                            return response_msg.payload
+                            return result_payload
                         else:
                             print(f"[Boss] ! Analyzer error: {response_msg.error_code} - {response_msg.error_message}")
                             if attempt < 2:
@@ -294,13 +296,15 @@ class BossAgent(BaseAgent):
 
                         if response_msg.status == A2AStatus.OK:
                             print(f"[Boss] ✓ Strategist strategy received (msg_id: {response_msg.message_id})")
+                            result_payload = response_msg.payload or {}
                             _logger.log_a2a_receive(
                                 agent_name="Boss", message_id=response_msg.message_id,
                                 sender_id="strategist_boss_worker", receiver_id="boss_boss_worker",
-                                action="propose_strategy", payload=response_msg.payload or {},
+                                action="propose_strategy_response",
+                                payload=result_payload,
                                 is_reply=True, reply_to_id=msg.message_id,
                             )
-                            return response_msg.payload
+                            return result_payload
                         else:
                             print(f"[Boss] ! Strategist error: {response_msg.error_code} - {response_msg.error_message}")
                             if attempt < 2:
@@ -367,13 +371,15 @@ class BossAgent(BaseAgent):
 
                         if response_msg.status == A2AStatus.OK:
                             print(f"[Boss] ✓ Proposer guess received (msg_id: {response_msg.message_id})")
+                            result_payload = response_msg.payload or {}
                             _logger.log_a2a_receive(
                                 agent_name="Boss", message_id=response_msg.message_id,
                                 sender_id="proposer_boss_worker", receiver_id="boss_boss_worker",
-                                action="propose_guess", payload=response_msg.payload or {},
+                                action="propose_guess_response",
+                                payload=result_payload,
                                 is_reply=True, reply_to_id=msg.message_id,
                             )
-                            return response_msg.payload
+                            return result_payload
                         else:
                             print(f"[Boss] ! Proposer error: {response_msg.error_code} - {response_msg.error_message}")
                             if attempt < 2:
@@ -436,13 +442,15 @@ class BossAgent(BaseAgent):
 
                         if response_msg.status == A2AStatus.OK:
                             print(f"[Boss] ✓ Validator validation received (msg_id: {response_msg.message_id})")
+                            result_payload = response_msg.payload or {}
                             _logger.log_a2a_receive(
                                 agent_name="Boss", message_id=response_msg.message_id,
                                 sender_id="validator_boss_worker", receiver_id="boss_boss_worker",
-                                action="validate", payload=response_msg.payload or {},
+                                action="validate_response",
+                                payload=result_payload,
                                 is_reply=True, reply_to_id=msg.message_id,
                             )
-                            return response_msg.payload
+                            return result_payload
                         else:
                             print(f"[Boss] ! Validator error: {response_msg.error_code} - {response_msg.error_message}")
                             if attempt < 2:
