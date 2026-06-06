@@ -1,0 +1,432 @@
+{
+  "meta": {
+    "log_file": "logs/MM_037_direct_debate_deepseek_messages.log",
+    "analyzed_at": "2026-06-06T03:47:07.156574",
+    "model": "all-MiniLM-L6-v2",
+    "reply_matching": "Priority 1: exact reply_to_id link in a2a_receive entries. Priority 2: temporal next send from receiver in same round."
+  },
+  "summary": {
+    "total_messages": 19,
+    "fire_and_forget": 0,
+    "triggers_response": 19,
+    "got_reply": 15,
+    "no_reply": 4,
+    "reply_rate_pct": 78.9,
+    "avg_similarity": 0.595,
+    "min_similarity": 0.2345,
+    "max_similarity": 0.7997,
+    "distribution": {
+      "HIGH": 0,
+      "MEDIUM": 10,
+      "LOW": 5
+    },
+    "by_action": {
+      "solve_round": {
+        "total": 11,
+        "got_reply": 10,
+        "avg_similarity": 0.6346
+      },
+      "debate_statement": {
+        "total": 8,
+        "got_reply": 5,
+        "avg_similarity": 0.5158
+      }
+    }
+  },
+  "results": [
+    {
+      "round": 1,
+      "message_id": "99ea628c",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:37:10.784769",
+      "content": "strategy: For the first guess, maximize information gain by using four distinct colors from the six available. This will help determine which colors are present in the code and provide a baseline for positional clues. Recommend the guess: [red, blue, green, ye",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "f942447b",
+        "content": "reasoning: First guess uses four distinct colors (red, blue, green, yellow) to maximize information gain. This will help determine which colors are present in the code and provide a baseline for positional feedb",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.6916,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 1,
+      "message_id": "4c685b83",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:37:11.972055",
+      "content": "strategy: Start with a guess that uses four different colors: ['red', 'blue', 'green', 'yellow']. This will give us feedback on how many pegs are correct in color and position (black pegs) and how many are correct in color but wrong position (white pegs). This",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "535b14ba",
+        "content": "reasoning: Initial guess using four distinct colors as per strategy to maximize information gain about correct colors and positions.",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.582,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 1,
+      "message_id": "759f5602",
+      "sender": "analyser",
+      "receiver": "analyser",
+      "action": "debate_statement",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": false,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:37:27.968078",
+      "content": "{'message': \"Our feedback shows exactly one correct peg in the correct position, meaning three of our guessed colors (red, blue, green, yellow) are not in the code at all. We'll now test which one is the correct color by keeping one at its position a",
+      "reply": {
+        "sender": "analyser",
+        "action": "debate_statement",
+        "message_id": "a8b5d430-4b9b-4825-97ef-83f887d1e241",
+        "content": "{'message': \"Our feedback indicates exactly one of {red, blue, green, yellow} is correct and in the right position; the other three are completely wrong. To identify which one, I propose testing 'red' at position 1 with three new colors (e.g., orange",
+        "source": "a2a_send"
+      },
+      "reply_method": "temporal_next_send",
+      "similarity_score": 0.7997,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 1,
+      "message_id": "a8b5d430",
+      "sender": "analyser",
+      "receiver": "analyser",
+      "action": "debate_statement",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": false,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:37:30.015558",
+      "content": "{'message': \"Our feedback indicates exactly one of {red, blue, green, yellow} is correct and in the right position; the other three are completely wrong. To identify which one, I propose testing 'red' at position 1 with three new colors (e.g., orange",
+      "reply": null,
+      "reply_method": "NO_REPLY_FOUND",
+      "similarity_score": null,
+      "similarity_label": "NO_REPLY_FOUND"
+    },
+    {
+      "round": 2,
+      "message_id": "b6d616fd",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:38:23.953264",
+      "content": "strategy: In round 2, guess ['white', 'white', 'white', 'white']. This will reveal the number and positions of whites in the code. Combined with knowledge from round 1 (exactly one of red/blue/green/yellow is correct and at its guessed position), we can deduce",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "dea93769",
+        "content": "reasoning: Following the strategist's advice: guessing all whites will reveal the count and positions of white pegs in the code. Combined with the first guess result (exactly one correct color in the correct pos",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.7193,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 2,
+      "message_id": "13e3db29",
+      "sender": "analyser",
+      "receiver": "analyser",
+      "action": "debate_statement",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": false,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:38:40.994130",
+      "content": "{'message': \"Our all-white guess returned 1 correct peg and 1 correct position, confirming exactly one white exists in the code at an unknown position. The other three positions are definitely not white. To locate the white efficiently, I propose tes",
+      "reply": {
+        "sender": "analyser",
+        "action": "solve_round",
+        "message_id": "70a1af10-8d66-48a5-bba1-a9998fe72a5a",
+        "content": "strategy: To maximize information gain, use a guess that holds red at position 1 and fills the other three with white: ['red', 'white', 'white', 'white']. This will either confirm red as the correct color (if we get 1+W pegs and 1+W positions, where W is the n",
+        "source": "a2a_send"
+      },
+      "reply_method": "temporal_next_send",
+      "similarity_score": 0.5809,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 2,
+      "message_id": "70a1af10",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:39:48.817928",
+      "content": "strategy: To maximize information gain, use a guess that holds red at position 1 and fills the other three with white: ['red', 'white', 'white', 'white']. This will either confirm red as the correct color (if we get 1+W pegs and 1+W positions, where W is the n",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "9ade7d10",
+        "content": "reasoning: Following strategist's advice: hold red at position 1 and fill rest with white to test if red is correct and gather information on white/black distribution based on feedback from previous guess (which",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.686,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 2,
+      "message_id": "477c446d",
+      "sender": "analyser",
+      "receiver": "analyser",
+      "action": "debate_statement",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": false,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:40:04.888207",
+      "content": "{'message': \"Our ['red', 'white', 'white', 'white'] guess yielded 1 correct peg but 0 correct positions. Combined with team_2's confirmation of exactly one white in the code and their 1 correct position, we deduce that the white must be at position 1",
+      "reply": null,
+      "reply_method": "NO_REPLY_FOUND",
+      "similarity_score": null,
+      "similarity_label": "NO_REPLY_FOUND"
+    },
+    {
+      "round": 3,
+      "message_id": "d4133a2e",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:40:41.246948",
+      "content": "strategy: Round 3: Guess ['blue', 'red', 'green', 'yellow'] (swap positions 1 and 2 of first guess). This will give either 1 peg 0 positions (if correct color is red or blue) or 1 peg 1 position (if correct color is green or yellow). This splits the candidates",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "bec6fe93",
+        "content": "reasoning: Following the strategy: swapping positions of red and blue from the first guess to distinguish whether the correct color is red/blue or green/yellow. This splits the candidate set based on the feedbac",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.702,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 3,
+      "message_id": "06c88308",
+      "sender": "analyser",
+      "receiver": "analyser",
+      "action": "debate_statement",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": false,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:40:48.382019",
+      "content": "{'message': \"Our guess of [blue, red, green, yellow] gave 1 correct peg but 0 correct positions, meaning exactly one of those colors is in the code but misplaced. To isolate which, we'll test a new set of colors or rotate positions. What did your fee",
+      "reply": {
+        "sender": "analyser",
+        "action": "solve_round",
+        "message_id": "6176859c-565c-4032-a497-d0c11e8287c0",
+        "content": "strategy: Next guess: ['white', 'blue', 'green', 'red'] (red is filler, known not in code). Feedback interpretation: if 1p1pos \u2192 only white is correct, meaning blue and green are both wrong, so yellow must be correct at pos4. If 2p2pos \u2192 either blue at pos2 or",
+        "source": "a2a_send"
+      },
+      "reply_method": "temporal_next_send",
+      "similarity_score": 0.4718,
+      "similarity_label": "LOW"
+    },
+    {
+      "round": 3,
+      "message_id": "6176859c",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:40:50.622827",
+      "content": "strategy: Next guess: ['white', 'blue', 'green', 'red'] (red is filler, known not in code). Feedback interpretation: if 1p1pos \u2192 only white is correct, meaning blue and green are both wrong, so yellow must be correct at pos4. If 2p2pos \u2192 either blue at pos2 or",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "87ab0c41",
+        "content": "reasoning: From Round 1 (red, blue, green, yellow \u2192 1 peg, 1 position), one of blue, green, or yellow is correct at its position. From Round 2 (red, white, white, white \u2192 1 peg, 0 positions), red is eliminated, ",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.5912,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 3,
+      "message_id": "230b3661",
+      "sender": "analyser",
+      "receiver": "analyser",
+      "action": "debate_statement",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": false,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:41:27.761942",
+      "content": "{'message': 'Our guess [white, blue, green, red] gave 2 correct pegs and 2 correct positions, so exactly two colors are correct and in the right spots; the other two are not in the code. Combined with your finding that only one of {blue, red, green, ",
+      "reply": null,
+      "reply_method": "NO_REPLY_FOUND",
+      "similarity_score": null,
+      "similarity_label": "NO_REPLY_FOUND"
+    },
+    {
+      "round": 4,
+      "message_id": "2238dd3b",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:41:42.371222",
+      "content": "strategy: Guess ['red', 'blue', 'white', 'black'] in positions 1,2,3,4. This will: (1) test red at pos1 and blue at pos2 to see which gives a correct position (since one of them is the correct color from R1 at that specific position), (2) test white at pos3 to",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "4bc59939",
+        "content": "reasoning: Follows the analyzer-strategist's recommendation: test red at pos1 and blue at pos2 to disambiguate which one is correct from Round 1, test white at pos3 to narrow its location, and introduce black to",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.6858,
+      "similarity_label": "MEDIUM"
+    },
+    {
+      "round": 4,
+      "message_id": "b4c839ba",
+      "sender": "analyser",
+      "receiver": "analyser",
+      "action": "debate_statement",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": false,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:41:50.200397",
+      "content": "{'message': 'Our feedback shows 3 correct colors (red, blue, white, black minus one) and 2 correct positions. To pinpoint which color is absent and fix the misplaced ones, I propose we next test a guess that keeps the two likely correct positions (e.",
+      "reply": {
+        "sender": "analyser",
+        "action": "solve_round",
+        "message_id": "f1b54675-646a-4655-b74d-adb6247f1d2c",
+        "content": "strategy: Strategy failed",
+        "source": "a2a_send"
+      },
+      "reply_method": "temporal_next_send",
+      "similarity_score": 0.2345,
+      "similarity_label": "LOW"
+    },
+    {
+      "round": 4,
+      "message_id": "f1b54675",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:43:36.191417",
+      "content": "strategy: Strategy failed",
+      "reply": null,
+      "reply_method": "NO_REPLY_FOUND",
+      "similarity_score": null,
+      "similarity_label": "NO_REPLY_FOUND"
+    },
+    {
+      "round": 4,
+      "message_id": "8e344328",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:44:05.724363",
+      "content": "strategy: Guess ['white', 'blue', 'black', 'yellow']. If feedback is 3 pegs and 3 positions, the code is [white, blue, black, black]. If feedback is 2 pegs and 2 positions, the code is [white, blue, blue, black]. Then on the next round, guess the exact code to",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "d56571b3",
+        "content": "reasoning: Following the strategy from the analyser-strategist to test the hypothesis that the code might be [white, blue, black, black] or [white, blue, blue, black]. This guess hasn't been used before and will",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.4679,
+      "similarity_label": "LOW"
+    },
+    {
+      "round": 5,
+      "message_id": "aa9025c2",
+      "sender": "analyser",
+      "receiver": "analyser",
+      "action": "debate_statement",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": false,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:44:58.529212",
+      "content": "{'message': 'Our guess [white, blue, black, yellow] gave 3 correct pegs and 3 correct positions, confirming three colors are exactly right and in place, with one incorrect. To pinpoint the wrong color, we should systematically replace each position w",
+      "reply": {
+        "sender": "analyser",
+        "action": "solve_round",
+        "message_id": "3989716d-9680-4dea-8ff0-0979c3389477",
+        "content": "strategy: Submit the guess ['white', 'blue', 'black', 'black'] to win the game. This directly uses the deduced code from pattern analysis.",
+        "source": "a2a_send"
+      },
+      "reply_method": "temporal_next_send",
+      "similarity_score": 0.4921,
+      "similarity_label": "LOW"
+    },
+    {
+      "round": 5,
+      "message_id": "3989716d",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:46:33.671763",
+      "content": "strategy: Submit the guess ['white', 'blue', 'black', 'black'] to win the game. This directly uses the deduced code from pattern analysis.",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "5eb2bcd9",
+        "content": "reasoning: The deduced code from previous rounds is white, blue, black, black. Round 5 gave 3 correct positions with ['white','blue','black','yellow'], indicating the first three are correct and the last is blac",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.5305,
+      "similarity_label": "LOW"
+    },
+    {
+      "round": 5,
+      "message_id": "5a52f4e2",
+      "sender": "analyser",
+      "receiver": "solver",
+      "action": "solve_round",
+      "msg_type": "TRIGGERS_RESPONSE",
+      "is_question": true,
+      "expects_reply": true,
+      "timestamp": "2026-06-06T03:46:34.216613",
+      "content": "strategy: Next guess: ['white', 'blue', 'red', 'red']. Use red as a known absent color to avoid ambiguity. Feedback will tell us: if 2p2pos \u2192 white at pos1 and blue at pos2 are correct; then remaining positions 3 and 4 are filled with blue or black. If 1p1pos ",
+      "reply": {
+        "sender": "solver",
+        "action": "solve_round_reply",
+        "message_id": "b8638982",
+        "content": "reasoning: Follows Analyst-Strategist's suggestion: use red as a known absent color (based on prior feedback) to disambiguate. This guess tests if white at pos1 and blue at pos2 are correct, while using red as a",
+        "source": "a2a_receive"
+      },
+      "reply_method": "exact_reply_link",
+      "similarity_score": 0.6899,
+      "similarity_label": "MEDIUM"
+    }
+  ]
+}
