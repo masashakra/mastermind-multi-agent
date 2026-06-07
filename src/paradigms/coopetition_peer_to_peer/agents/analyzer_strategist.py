@@ -60,52 +60,55 @@ class AnalyzerStrategistAgent(BaseAgent):
         correct_positions = feedback.get("correct_positions", 0)
         round_num = len(previous_guesses or []) + 1
 
-        system_prompt = f"""You are the Analyzer-Strategist on Team {self.team} in a peer-to-peer Mastermind coopetition.
-Your dual role:
+        system_prompt = f"""You are the Analyzer-Strategist on Team {self.team} in a peer-to-peer Mastermind game.
+
+CRITICAL: Output ONLY valid JSON. NO comments, NO text before/after JSON, NO // or /* */ in output.
+
+TASK:
 1. Extract constraints from feedback
-2. Develop strategy for next guess based on those constraints
-3. Decide: should we share insights with opponent or keep them private?
+2. Develop strategy for next guess
 
 MASTERMIND RULES:
-- correct_pegs = total colors in guess that exist in secret
+- correct_pegs = colors in secret (any position)
 - correct_positions = colors in EXACT right position
-- If pegs=0 → NONE of those colors are in secret
-- misplaced = pegs - positions = colors that exist but WRONG position
+- pegs=0 → NONE of those colors in secret
+- misplaced = pegs - positions
 
-ANALYSIS & STRATEGY TASK:
-1. Extract constraints from latest feedback
-2. Identify locked positions and impossible colors
-3. Develop strategic approach: broad testing vs focused vs position elimination
-4. Rate confidence in proposed strategy (0-100%)
-5. Prepare arguments for why our approach is better
-6. Assess: is this insight something to share with opponent or keep secret?
-
-Format response as JSON:
+OUTPUT FORMAT - STRICT JSON ONLY:
 {{
   "analysis": {{
-    "correct_colors": [list of colors in secret],
-    "locked_positions": {{"position": "color"}},
-    "impossible_colors": [list],
-    "misplaced_colors": {{"color": [positions]}}
+    "correct_colors": ["color1", "color2"],
+    "locked_positions": {{"0": "red", "1": "blue"}},
+    "impossible_colors": ["color"],
+    "misplaced_colors": {{"red": [0, 2]}}
   }},
   "strategy": {{
-    "strategy_name": "broad|focused|position|pattern",
-    "rationale": "why this approach given current constraints",
-    "confidence": 0-100,
-    "key_assumptions": ["assumption 1", "assumption 2"]
+    "strategy_name": "broad",
+    "rationale": "explanation",
+    "confidence": 85,
+    "key_assumptions": ["assumption1", "assumption2"]
   }},
   "debate_prep": {{
-    "main_argument": "why our strategy is superior",
-    "supporting_arguments": ["point 1", "point 2"],
-    "expected_criticisms": ["opponent might say X"],
-    "willingness_to_compromise": true|false,
-    "compromise_suggestion": "if willing, what would we accept?"
+    "main_argument": "argument",
+    "supporting_arguments": ["point1", "point2"],
+    "expected_criticisms": ["criticism1"],
+    "willingness_to_compromise": true,
+    "compromise_suggestion": "what would we accept"
   }},
   "competitive_advantage": {{
-    "share_analysis_with_opponent": true|false,
-    "reasoning": "why share or not share"
+    "share_analysis_with_opponent": false,
+    "reasoning": "why share or not"
   }}
-}}"""
+}}
+
+RULES:
+- Output ONLY the JSON object
+- No markdown, code blocks, or explanations
+- No // or /* */ comments inside JSON
+- All strings use double quotes
+- Booleans are true or false (no quotes)
+- Numbers are integers (0-100)
+- All arrays and objects must be properly closed"""
 
         user_message = f"""Round {round_num} Analysis:
 Last Guess: {last_guess}
@@ -114,7 +117,7 @@ Previous guesses: {previous_guesses or []}
 Shared knowledge: {shared_knowledge or []}"""
 
         try:
-            response = self.call_llm(system_prompt, user_message)
+            response = self.call_llm_conversation(system_prompt, user_message)
             return self.parse_json_response(response)
         except Exception as e:
             print(f"[{self.name}] Error analyzing & developing strategy: {e}")
@@ -153,28 +156,32 @@ Shared knowledge: {shared_knowledge or []}"""
     ) -> Dict[str, Any]:
         """Generate arguments for own proposal vs opponent's (peer negotiation)."""
 
-        system_prompt = f"""You are the Analyzer-Strategist on Team {self.team} in a peer-to-peer debate (no Judge).
-Your role: Negotiate the best outcome for your team.
+        system_prompt = f"""You are arguing on Team {self.team} in peer-to-peer negotiation (no Judge).
 
-PEER-NEGOTIATION CONTEXT:
-- Teams will vote on which guess to use (confidence-weighted)
-- You need to make a compelling case to win the vote
-- But also consider: good relations with opponent team for future rounds
+CRITICAL: Output ONLY valid JSON. NO comments, NO text before/after, NO // or /* */.
 
-DEBATE TASK:
-Compare two proposals and argue why your team's is better.
-Consider: would it be better to win this round or compromise to build goodwill?
+TASK: Argue why our proposal is better. Consider: win or compromise for goodwill.
 
-Format as JSON:
+OUTPUT FORMAT - STRICT JSON ONLY:
+
 {{
-  "main_argument": "strongest reason why our approach is better",
-  "supporting_arguments": ["point 1", "point 2", "point 3"],
-  "opponent_strengths": "acknowledge good points they have",
-  "our_confidence": 0-100,
-  "willingness_to_compromise": true|false,
-  "compromise_suggestion": "if willing, what would we accept?",
-  "negotiation_strategy": "win_this_round|build_goodwill|true_consensus"
-}}"""
+  "main_argument": "strongest reason",
+  "supporting_arguments": ["point 1", "point 2"],
+  "opponent_strengths": "good points",
+  "our_confidence": 85,
+  "willingness_to_compromise": true,
+  "compromise_suggestion": "what we accept",
+  "negotiation_strategy": "win_this_round"
+}}
+
+RULES:
+- Output ONLY the JSON object
+- No markdown, code blocks, or explanations
+- No // or /* */ comments
+- All strings use double quotes
+- Booleans are true or false (no quotes)
+- Numbers are integers (0-100)
+- Proper JSON syntax required"""
 
         user_message = f"""Peer debate (no Judge):
 Our proposal: {own_proposal}
@@ -182,7 +189,7 @@ Their proposal: {opponent_proposal}
 Context: {debate_context}"""
 
         try:
-            response = self.call_llm(system_prompt, user_message)
+            response = self.call_llm_conversation(system_prompt, user_message)
             return self.parse_json_response(response)
         except Exception as e:
             print(f"[{self.name}] Error generating arguments: {e}")

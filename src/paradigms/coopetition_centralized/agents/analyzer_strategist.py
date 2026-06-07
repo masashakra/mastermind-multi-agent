@@ -58,54 +58,72 @@ class AnalyzerStrategistAgent(BaseAgent):
         correct_positions = feedback.get("correct_positions", 0)
         round_num = len(previous_guesses or []) + 1
 
-        system_prompt = f"""You are the Analyzer-Strategist on Team {self.team} in a Mastermind coopetition game.
-Your dual role:
-1. Extract constraints from feedback
-2. Develop strategy for next guess based on those constraints
+        system_prompt = f"""You are the Analyzer-Strategist on Team {self.team} in Mastermind.
+
+OUTPUT ONLY VALID JSON. NO COMMENTS, NO EXPLANATIONS, NO TEXT OUTSIDE JSON.
 
 MASTERMIND RULES:
-- correct_pegs = total colors in guess that exist in secret
-- correct_positions = colors in EXACT right position
-- If pegs=0 → NONE of those colors are in secret
-- misplaced = pegs - positions = colors that exist but WRONG position
+- correct_pegs = count of colors in secret (any position)
+- correct_positions = count of colors in exact right position
+- If pegs=0: NONE of those colors are in secret
+- misplaced = pegs - positions (colors present but wrong spot)
 
-ANALYSIS & STRATEGY TASK:
-1. Extract constraints from latest feedback
-2. Identify locked positions and impossible colors
-3. Develop strategic approach: broad testing vs focused vs position elimination
-4. Rate confidence in proposed strategy (0-100%)
-5. Prepare arguments for why our approach is better than opponent's
-
-Format response as JSON:
+RESPOND WITH ONLY THIS JSON STRUCTURE (no markdown, no code blocks):
 {{
   "analysis": {{
-    "correct_colors": [list of colors in secret],
-    "locked_positions": {{"position": "color"}},
-    "impossible_colors": [list],
-    "misplaced_colors": {{"color": [positions]}}
+    "correct_colors": [],
+    "locked_positions": {{}},
+    "impossible_colors": [],
+    "misplaced_colors": {{}}
   }},
   "strategy": {{
-    "strategy_name": "broad|focused|position|pattern",
-    "rationale": "why this approach given current constraints",
-    "confidence": 0-100,
-    "key_assumptions": ["assumption 1", "assumption 2"]
+    "strategy_name": "string",
+    "rationale": "string",
+    "confidence": 0,
+    "key_assumptions": []
   }},
   "debate_prep": {{
-    "main_argument": "why our strategy is superior",
-    "supporting_arguments": ["point 1", "point 2"],
-    "expected_criticisms": ["opponent might say X"]
+    "main_argument": "string",
+    "supporting_arguments": [],
+    "expected_criticisms": []
   }}
 }}"""
 
-        user_message = f"""Round {round_num} Analysis:
-Last Guess: {last_guess}
-Feedback: {correct_pegs} correct pegs, {correct_positions} correct positions
-Previous guesses: {previous_guesses or []}
-Shared knowledge: {shared_knowledge or []}"""
+        # Build a clean, unambiguous user message with all game history
+        history_text = ""
+        if shared_knowledge:
+            history_text = "\nGAME HISTORY:\n"
+            for i, item in enumerate(shared_knowledge, 1):
+                g = item.get("guess", [])
+                f = item.get("feedback", {})
+                pegs = f.get("correct_pegs", 0)
+                positions = f.get("correct_positions", 0)
+                history_text += f"  Round {i}: guess {g} → {pegs} pegs, {positions} positions\n"
+
+        user_message = f"""CURRENT ROUND {round_num}:
+Last guess: {last_guess}
+Feedback from that guess: {correct_pegs} correct pegs, {correct_positions} correct positions{history_text}
+
+TASK:
+1. Analyze what this feedback tells you about the secret code
+2. Identify which colors are definitely in secret, definitely not in secret, and misplaced
+3. Develop a strategy for the next guess that maximizes information gain
+4. Be confident but acknowledge uncertainties"""
 
         try:
             response = self.call_llm_conversation(system_prompt, user_message)
-            return self.parse_json_response(response)
+            parsed = self.parse_json_response(response)
+
+            # Check if parsing failed and retry with stricter prompt
+            if parsed.get("error") == "Failed to parse JSON response":
+                print(f"[{self.name}] JSON parsing failed, retrying with stricter prompt...")
+                # Retry with even more explicit instruction
+                strict_system = system_prompt + "\n\nREMEMBER: You MUST return ONLY the JSON object. Nothing else. Not even one word before or after."
+                strict_user = user_message + "\n\nReturn the JSON now:"
+                retry_response = self.call_llm_conversation(strict_system, strict_user)
+                parsed = self.parse_json_response(retry_response)
+
+            return parsed
         except Exception as e:
             print(f"[{self.name}] Error analyzing & developing strategy: {e}")
             return {
@@ -137,24 +155,30 @@ Shared knowledge: {shared_knowledge or []}"""
     ) -> Dict[str, Any]:
         """Generate arguments for own proposal vs opponent's."""
 
-        system_prompt = f"""You are the Analyzer-Strategist on Team {self.team} in a coopetition debate.
-Your role: Make the most compelling case for your team's proposal.
+        system_prompt = f"""You are the Analyzer-Strategist on Team {self.team} in a debate.
 
-DEBATE TASK:
-Compare two proposals and argue why your team's is better.
-- Use logic and evidence
-- Acknowledge opponent's strengths
-- Offer to compromise if needed
+CRITICAL: Output ONLY valid JSON. NO comments, NO text before/after, NO // or /* */.
 
-Format as JSON:
+TASK: Compare proposals and argue why ours is better.
+
+OUTPUT FORMAT - STRICT JSON ONLY:
 {{
   "main_argument": "strongest reason why our approach is better",
   "supporting_arguments": ["point 1", "point 2", "point 3"],
-  "opponent_strengths": "acknowledge good points they have",
-  "our_confidence": 0-100,
-  "willingness_to_compromise": true|false,
-  "compromise_suggestion": "if willing, what would we accept?"
-}}"""
+  "opponent_strengths": "acknowledge good points",
+  "our_confidence": 85,
+  "willingness_to_compromise": true,
+  "compromise_suggestion": "what would we accept"
+}}
+
+RULES:
+- Output ONLY the JSON object
+- No markdown, code blocks, or explanations
+- No // or /* */ comments
+- All strings use double quotes
+- Booleans are true or false (no quotes)
+- Numbers are integers (0-100)
+- Proper JSON syntax required"""
 
         user_message = f"""Debate proposals:
 Our proposal: {own_proposal}
@@ -163,7 +187,17 @@ Context: {debate_context}"""
 
         try:
             response = self.call_llm_conversation(system_prompt, user_message)
-            return self.parse_json_response(response)
+            parsed = self.parse_json_response(response)
+
+            # Retry if parsing failed
+            if parsed.get("error") == "Failed to parse JSON response":
+                print(f"[{self.name}] JSON parsing failed on debate, retrying...")
+                strict_system = system_prompt + "\n\nRULE: Return ONLY the JSON object. No text before or after."
+                strict_user = user_message + "\n\nRespond with JSON only:"
+                retry_response = self.call_llm_conversation(strict_system, strict_user)
+                parsed = self.parse_json_response(retry_response)
+
+            return parsed
         except Exception as e:
             print(f"[{self.name}] Error generating arguments: {e}")
             return {
@@ -214,15 +248,27 @@ Context: {debate_context}"""
         if not available_colors:
             available_colors = ["red", "blue", "green", "yellow", "white", "black", "orange", "purple"]
 
-        system_prompt = f"""You are proposing the next Mastermind guess for Team {self.team}.
-Given the strategy and constraints, propose the best guess (exactly 4 colors).
+        system_prompt = f"""You are proposing a Mastermind guess for Team {self.team}.
 
-Format as JSON:
+CRITICAL: Output ONLY valid JSON. NO comments, NO text before/after, NO // or /* */.
+
+TASK: Propose exactly 4 colors based on strategy.
+
+OUTPUT FORMAT - STRICT JSON ONLY:
 {{
   "guess": ["color1", "color2", "color3", "color4"],
   "rationale": "why this guess",
-  "confidence": 0-100
-}}"""
+  "confidence": 85
+}}
+
+RULES:
+- Output ONLY the JSON object
+- Guess must be exactly 4 colors
+- No markdown, code blocks, or explanations
+- No // or /* */ comments
+- All strings use double quotes
+- Numbers are integers (0-100)
+- Proper JSON syntax required"""
 
         user_message = f"""Strategy: {strategy}
 Constraints: {constraints}

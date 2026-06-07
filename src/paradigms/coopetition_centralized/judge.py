@@ -95,8 +95,14 @@ class JudgeAgent(BaseAgent):
         print(f"[Debug] Team B result: {team_b_result}")
 
         if team_a_result.get("error") or team_b_result.get("error"):
+            print(f"[Judge] Both teams failed to generate proposals. Using fallback strategy...")
+            fallback_guess = self._generate_fallback_guess(shared_knowledge)
             return {
-                "error": "Failed to get proposals",
+                "status": "fallback",
+                "winning_guess": fallback_guess,
+                "winning_team": "fallback",
+                "decision_method": "strategic_fallback",
+                "reasoning": "Both teams failed to generate valid proposals. Judge generated strategic fallback guess.",
                 "team_a_error": team_a_result.get("error"),
                 "team_b_error": team_b_result.get("error"),
             }
@@ -217,6 +223,55 @@ class JudgeAgent(BaseAgent):
         print(f"[Judge Voting] Team B weight: {decision.get('weight_b', 0):.1%}")
 
         return decision
+
+    def _generate_fallback_guess(self, shared_knowledge: List[Dict[str, Any]]) -> List[str]:
+        """Generate a strategic fallback guess when both teams fail.
+
+        Uses simple heuristics based on previous guesses and feedback.
+        """
+        all_colors = ["red", "blue", "green", "yellow", "white", "black", "orange", "purple"]
+
+        # If no history, use classic opening guess
+        if not shared_knowledge or len(shared_knowledge) == 0:
+            return ["red", "blue", "green", "yellow"]
+
+        # Analyze feedback to find eliminated colors
+        correct_colors = set()
+        eliminated_colors = set()
+        misplaced_colors = {}
+
+        for entry in shared_knowledge:
+            guess = entry.get("guess", [])
+            feedback = entry.get("feedback", {})
+            pegs = feedback.get("correct_pegs", 0)
+            positions = feedback.get("correct_positions", 0)
+
+            # If 0 pegs, all colors in this guess are eliminated
+            if pegs == 0:
+                eliminated_colors.update(guess)
+            else:
+                # Colors are present in secret
+                for color in guess:
+                    if color not in eliminated_colors:
+                        correct_colors.add(color)
+
+        # Build a new guess with correct colors + new untested colors
+        new_guess = []
+        for color in correct_colors:
+            if len(new_guess) < 4:
+                new_guess.append(color)
+
+        # Fill remaining slots with untested colors
+        untested = [c for c in all_colors if c not in correct_colors and c not in eliminated_colors]
+        while len(new_guess) < 4 and untested:
+            new_guess.append(untested.pop(0))
+
+        # Fallback: just pick 4 colors
+        if len(new_guess) < 4:
+            new_guess = [c for c in all_colors if c not in eliminated_colors][:4]
+
+        print(f"[Judge] Fallback guess (using {len(correct_colors)} confirmed colors + new tests): {new_guess[:4]}")
+        return new_guess[:4]
 
     def _confidence_weighted_voting(
         self,

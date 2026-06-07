@@ -222,18 +222,18 @@ class BaseAgent(ABC):
                 self.llm = {
                     "api_key": or_key,
                     "type": "deepseek",
-                    "model": "deepseek/deepseek-r1",   # R1 via OpenRouter
+                    "model": "deepseek/deepseek-chat",   # ⭐ Phase 3a: Faster model (was deepseek-r1)
                     "base_url": "https://openrouter.ai/api/v1",
                 }
-                print(f"[{self.name}] DeepSeek R1 via OpenRouter")
+                print(f"[{self.name}] ⭐ Phase 3a: DeepSeek Chat (faster) via OpenRouter")
             elif ds_key:
                 self.llm = {
                     "api_key": ds_key,
                     "type": "deepseek",
-                    "model": "deepseek-reasoner",
+                    "model": "deepseek-chat",  # ⭐ Phase 3a: Faster model (was deepseek-reasoner)
                     "base_url": "https://api.deepseek.com",
                 }
-                print(f"[{self.name}] DeepSeek R1 via DeepSeek API")
+                print(f"[{self.name}] ⭐ Phase 3a: DeepSeek Chat (faster) via DeepSeek API")
             else:
                 raise ValueError(
                     "No DeepSeek key found.\n"

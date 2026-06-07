@@ -80,6 +80,7 @@ class ProposerAgent(BaseAgent):
         self.current_hypothesis_index: int = 0  # Which hypothesis are we testing?
         self.tested_hypotheses: List[Dict[str, any]] = []  # Track what we've tried
         self.last_feedback: Dict[str, int] = {}  # Last round's feedback for comparison
+        self.neutral_rounds: int = 0  # Count of consecutive NEUTRAL outcomes (for escaping loops)
 
     def propose_guess(
         self,
@@ -128,7 +129,48 @@ class ProposerAgent(BaseAgent):
         # DEBUG: Check what we received
         print(f"[Proposer-R{round_num}] DEBUG: last_feedback = {last_feedback}, color_inconsistency exists = {bool(color_inconsistency)}")
 
-        if color_inconsistency and not color_inconsistency.get("is_consistent"):
+        # ⭐ PHASE 3: POSITION PERMUTATION (Once all 4 colors found OR round >= 5)
+        # If we have 4 correct pegs, we've found all colors - now permute positions
+        # OR force permutation mode after round 5 to avoid endless Phase 2
+        best_feedback = strategy.get("max_pegs_feedback", 0)
+        force_phase3 = round_num >= 5  # After round 5, force permutation mode
+
+        if (best_feedback >= num_pegs or force_phase3) and len(colors_in) >= num_pegs:
+            print(f"\n[Proposer] 🎯 PHASE 3: ALL {num_pegs} COLORS FOUND! Switching to position permutation...")
+            from itertools import permutations
+
+            # Get the 4 known colors
+            known_colors = colors_in[:num_pegs]
+
+            # Generate ALL unique permutations and try them systematically
+            if not hasattr(self, '_all_perms'):
+                self._all_perms = list(set(permutations(known_colors)))
+                print(f"[Proposer] Generated {len(self._all_perms)} unique permutations to test")
+
+            if self._all_perms:
+                # Use round number to cycle through permutations
+                perm_idx = (round_num - 5) % len(self._all_perms)
+                perm_guess = list(self._all_perms[perm_idx])
+
+                # Apply locks if they exist
+                for pos_str, color in locked_positions.items():
+                    try:
+                        pos = int(pos_str)
+                        if pos < len(perm_guess):
+                            perm_guess[pos] = color
+                    except (ValueError, TypeError):
+                        pass
+
+                # Check if we already tested this exact guess
+                if perm_guess not in self.guess_history:
+                    self.guess_history.append(perm_guess)
+                    return {
+                        "guess": perm_guess,
+                        "reasoning": f"Position permutation #{perm_idx + 1}/{len(self._all_perms)}: {perm_guess}"
+                    }
+
+        if color_inconsistency and not color_inconsistency.get("is_consistent") and len(colors_in) < num_pegs:
+            # Only do Phase 2 if we haven't found all colors yet
             print(f"\n[Proposer] 🎯 PHASE 2 DETECTION: Color inconsistency found!")
             print(f"[Proposer]    Issue: {color_inconsistency.get('issue')}")
             print(f"[Proposer]    Tested {color_inconsistency.get('tested_count')} colors, got {color_inconsistency.get('correct_count')}P")
@@ -139,8 +181,19 @@ class ProposerAgent(BaseAgent):
 
                 if outcome == "FAILED":
                     # Hypothesis failed - SWITCH to next one
-                    print(f"[Proposer] 🔄 SWITCHING to next hypothesis...")
+                    print(f"[Proposer] 🔄 SWITCHING to next hypothesis (FAILED)...")
                     self.current_hypothesis_index += 1
+                    self.neutral_rounds = 0  # Reset neutral counter
+                elif outcome == "NEUTRAL":
+                    # Same feedback - might be stuck in loop
+                    self.neutral_rounds += 1
+                    if self.neutral_rounds >= 2:
+                        # Give up on this hypothesis after 2 rounds of NEUTRAL
+                        print(f"[Proposer] 🔄 SWITCHING to next hypothesis (stuck on NEUTRAL for {self.neutral_rounds} rounds)...")
+                        self.current_hypothesis_index += 1
+                        self.neutral_rounds = 0
+                else:  # PROMISING
+                    self.neutral_rounds = 0
 
             # Get color hypotheses and select which one to test
             color_hypotheses = strategy.get("color_hypotheses", [])
@@ -478,6 +531,61 @@ Output ONLY JSON:
         self.last_feedback = new_feedback
 
         return outcome
+
+    def _get_next_permutation(self, colors: List[str], locked_positions: Dict[str, str], round_num: int) -> List[str]:
+        """⭐ POSITION PERMUTATION: Generate a systematic permutation to test.
+
+        Strategy: Test different position arrangements of known colors, respecting locks.
+        """
+        from itertools import permutations
+
+        if len(colors) < 4:
+            return None
+
+        # Start with first 4 unique colors
+        base_colors = list(dict.fromkeys(colors[:4]))  # Remove duplicates, preserve order
+
+        if len(base_colors) < 4:
+            return None
+
+        # Apply locks if they exist
+        locked = {}
+        for pos_str, color in locked_positions.items():
+            try:
+                locked[int(pos_str)] = color
+            except (ValueError, TypeError):
+                pass
+
+        # Build result with locks applied
+        result = [None] * 4
+
+        # Place locked colors
+        remaining_colors = list(base_colors)
+        for pos, color in sorted(locked.items()):
+            if pos < 4:
+                result[pos] = color
+                if color in remaining_colors:
+                    remaining_colors.remove(color)
+
+        # Fill remaining positions with remaining colors (rotated each round)
+        if remaining_colors:
+            rotation = (round_num - 6) % len(remaining_colors)
+            rotated = remaining_colors[rotation:] + remaining_colors[:rotation]
+
+            col_idx = 0
+            for pos in range(4):
+                if result[pos] is None:
+                    if col_idx < len(rotated):
+                        result[pos] = rotated[col_idx]
+                        col_idx += 1
+
+        # Safety check: ensure all positions filled with unique colors
+        if None in result or len(set(result)) != 4:
+            # Fallback: just return base colors
+            return base_colors
+
+        print(f"[Proposer] ⚡ Position permutation: {result}")
+        return result
 
     def process(self, **kwargs) -> Dict[str, Any]:
         """Process proposal."""

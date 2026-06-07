@@ -75,6 +75,101 @@ class AnalyzerStrategistAgent(BaseAgent):
         # ⭐ AGENT-MANAGED MEMORY: Initialize analysis history
         self.analysis_history: List[Dict[str, Any]] = []  # Per-agent memory!
 
+    def _check_color_consistency(self, guess_history: List[List[str]],
+                                 feedback_history: List[Dict[str, int]],
+                                 identified_colors: List[str]) -> Dict[str, Any]:
+        """⭐ PHASE 2: Detect when color identification contradicts feedback.
+
+        Problem: If we tested 4 colors and got 3P feedback, one tested color is WRONG!
+        Current code assumes all 4 are in puzzle, which causes infinite loops.
+
+        This detects the inconsistency and triggers recovery mode.
+        """
+        if not guess_history or not feedback_history:
+            return {"is_consistent": True}
+
+        # Check each round's feedback
+        for i, (guess, feedback) in enumerate(zip(guess_history, feedback_history)):
+            if not isinstance(guess, list) or not isinstance(feedback, dict):
+                continue
+
+            num_tested = len(set(guess))
+            pegs = feedback.get("correct_pegs", 0)
+
+            # KEY INSIGHT: If we tested N different colors but only N-1 are correct (pegs < N),
+            # then 1 of the tested colors is WRONG!
+            if pegs < num_tested and num_tested == 4:
+                print(f"[Color Consistency] ⚠️ ANOMALY at round {i+1}:")
+                print(f"   Tested 4 colors: {set(guess)}")
+                print(f"   Got {pegs}P feedback (only {pegs} are correct)")
+                print(f"   → ONE of tested colors is WRONG!")
+                print(f"   → Current color_in = {identified_colors}")
+
+                return {
+                    "is_consistent": False,
+                    "issue": "color_count_mismatch",
+                    "round": i + 1,
+                    "tested_colors": list(set(guess)),
+                    "tested_count": num_tested,
+                    "correct_count": pegs,
+                    "wrong_color_count": num_tested - pegs,
+                    "identified_colors": identified_colors
+                }
+
+        return {"is_consistent": True}
+
+    def _generate_color_hypotheses(self, guess: List[str], feedback: Dict[str, int],
+                                   available_colors: List[str]) -> List[Dict[str, Any]]:
+        """⭐ PHASE 2: Generate alternative color sets when feedback is inconsistent.
+
+        When we detect that 1 of 4 tested colors is wrong, generate hypotheses
+        for which color might be wrong and what might replace it.
+
+        ⭐ PRIORITY: Score hypotheses by likelihood (position-based)
+        - Colors at position 1-2 more likely to be wrong than 0 or 3
+        """
+        pegs = feedback.get("correct_pegs", 0)
+        tested_colors = list(set(guess))
+
+        if len(tested_colors) != 4 or pegs >= 4:
+            return []
+
+        # One color is wrong - generate hypotheses
+        untested = [c for c in available_colors if c not in tested_colors]
+
+        # ⭐ PRIORITY SCORING: By position likelihood
+        position_scores = {0: 1, 1: 3, 2: 3, 3: 2}  # Middle positions more likely wrong
+
+        hypotheses = []
+        for wrong_color_idx, wrong_color in enumerate(tested_colors):
+            # Find position of this color in the guess
+            color_positions = [i for i, c in enumerate(guess) if c == wrong_color]
+            avg_position = sum(color_positions) / len(color_positions) if color_positions else 1.5
+            position_score = position_scores.get(int(avg_position), 1.5)
+
+            for replacement in untested:
+                hypothesis_colors = [
+                    replacement if c == wrong_color else c
+                    for c in guess  # ⭐ FIX: Use guess directly, not tested_colors set
+                ]
+                hypotheses.append({
+                    "assumption": f"{wrong_color} is WRONG, {replacement} is IN",
+                    "colors": hypothesis_colors[:4],  # ⭐ Preserve order
+                    "wrong_color": wrong_color,
+                    "replacement": replacement,
+                    "score": position_score,  # ⭐ NEW: Priority score
+                    "confidence": 0.5 if replacement in untested else 0.0
+                })
+
+        # ⭐ SORT BY SCORE (highest first) then by replacement availability
+        hypotheses.sort(key=lambda h: (-h["score"], untested.index(h["replacement"]) if h["replacement"] in untested else 999))
+
+        print(f"[Color Hypotheses] Generated {len(hypotheses)} hypotheses (prioritized by position)")
+        if hypotheses:
+            print(f"  #1 (priority): {hypotheses[0]['assumption']} → colors={hypotheses[0]['colors']}")
+
+        return hypotheses
+
     def _detect_locked_positions(self, guess_history: List[List[str]],
                                   feedback_history: List[Dict[str, int]]) -> Dict[str, str]:
         """⭐ EXPLICIT POSITION DETECTION: Infer locked positions from guess patterns.
@@ -243,26 +338,41 @@ class AnalyzerStrategistAgent(BaseAgent):
                 strategy = analysis.get("strategy", "unknown")
                 competitive_text += f"{team_key}: {colors} colors, {positions} positions locked ({strategy})\n"
 
-        # ⭐ ENHANCED PROMPT: Better position inference
+        # ⭐ ENHANCED PROMPT: Better constraint deduction + position inference
         prompt = f"""Mastermind Analyzer ({num_pegs} pegs). Colors: {', '.join(available_colors)}.
 
 {analysis_history_text}{history_text}{feedback_text}
 
-INFER LOCKED POSITIONS:
+⭐ CONSTRAINT DEDUCTION LOGIC:
+1. If pegs=0: ALL colors in that guess are OUT (impossible)
+2. If pegs=N from a guess of N different colors: EXACTLY N are IN, the rest are OUT
+   - Example: [red,blue,green,yellow]→1P means only 1 is IN, 3 are definitely OUT
+   - Mark the 3 as colors_out!
+3. If same color set consistently gives low pegs: Those colors are exhausted, test NEW colors
+4. Track which colors appear in guesses with HIGHER pegs - those are the IN colors
+
+LOCKED POSITION INFERENCE:
 - If a color appears at SAME position in multiple guesses with CONSISTENT feedback → LOCKED
 - If swapping positions CHANGED feedback → those positions must be locked
 - Example: [red,blue,green,yellow]→3P/2L, [red,blue,yellow,green]→3P/0L means green/yellow positions were locked
 
 EXTRACT:
-1. colors_in: Colors that improve feedback
-2. colors_out: Colors that never appear or always fail
+1. colors_in: Colors confirmed IN the secret
+2. colors_out: Colors CONFIRMED OUT (from 0P guesses or logical deduction)
 3. locked_positions: Positions with same color giving consistent results
 4. CRITICAL: Once locked, NEVER change it
 
-STRATEGY:
-- If 2+ positions locked → test remaining colors in unknown positions
-- If 3+ colors found → test different ARRANGEMENTS of these colors
-- Else → test new colors
+DEDUCTION STRATEGY:
+- Identify colors that appear only in LOW-feedback guesses → mark as OUT
+- Identify colors in HIGH-feedback guesses → mark as IN
+- If testing 4 different colors gives 1P consistently: Only 1 is IN, rest are OUT - EXPAND search!
+- When a color set is exhausted (same results), try completely different colors
+
+NEXT ACTION:
+- If 2+ positions locked → permute remaining colors in unknown positions
+- If 3+ colors found AND exploring positions → test different arrangements
+- If only 1-2 colors found from current set → EXPAND to new untested colors
+- Never re-guess the exact same combination
 
 OUTPUT JSON ONLY:
 {{"colors_in": ["color1"], "colors_out": [], "locked_positions": {{"0": "red"}}, "strategy": "...", "near_solve_state": false}}
@@ -282,8 +392,13 @@ MASTERMIND RULES:
 - misplaced = pegs - positions = colors that exist but in WRONG position
 - Colors CAN repeat in the secret (CRITICAL: a color can appear 1, 2, 3, or 4 times!)
 
+⭐ KEY INSIGHT: The secret uses exactly 4 colors (possibly with repeats).
+If testing 4 different colors gives low pegs (1-2), most are WRONG → must expand to untested colors.
+Don't keep permuting the same 4 colors if feedback plateaus!
+
 You have perfect memory of all prior analysis via conversation history.
-Use it to build constraints progressively without restarting."""
+Use it to build constraints progressively without restarting.
+When stuck, deduct which colors are OUT and explore new colors!"""
 
             response = self.call_llm_conversation(system_prompt, prompt)
 
@@ -334,7 +449,10 @@ Use it to build constraints progressively without restarting."""
                 pass
 
             # If we have guess_history from input, use that for position detection
+            print(f"[Analyzer] Round {round_num}: Checking guess_history, type={type(guess_history)}, len={len(guess_history) if isinstance(guess_history, list) else 'N/A'}")
             if isinstance(guess_history, list) and len(guess_history) > 0:
+                print(f"[Analyzer] First entry in guess_history: {guess_history[0] if guess_history else 'empty'}")
+
                 # Extract feedback values
                 feedback_for_positions = []
                 for i, g_entry in enumerate(guess_history):
@@ -352,6 +470,73 @@ Use it to build constraints progressively without restarting."""
                         actual_guesses.append(g_entry)
                     else:
                         actual_guesses.append([])
+
+                print(f"[Analyzer] Extracted {len(actual_guesses)} guesses, {len(feedback_for_positions)} feedback entries")
+                print(f"[Analyzer] Actual guesses: {actual_guesses}")
+                print(f"[Analyzer] Feedback: {feedback_for_positions}")
+
+                # ⭐ PHASE 2: Check for color identification inconsistencies
+                consistency_check = self._check_color_consistency(
+                    actual_guesses, feedback_for_positions, result.get("colors_in", [])
+                )
+                if not consistency_check.get("is_consistent"):
+                    print(f"[Phase 2] Color inconsistency detected: {consistency_check}")
+                    # Generate hypotheses to test
+                    hypotheses = self._generate_color_hypotheses(
+                        actual_guesses[consistency_check.get("round", 1) - 1] if actual_guesses else [],
+                        feedback_for_positions[consistency_check.get("round", 1) - 1] if feedback_for_positions else {},
+                        available_colors
+                    )
+                    result["color_hypotheses"] = hypotheses
+                    result["color_inconsistency"] = consistency_check
+                    print(f"[Phase 2] Added {len(hypotheses)} hypotheses to strategy")
+
+                # ⭐ CONSTRAINT DEDUCTION: Infer colors_out from feedback patterns
+                # If we have multiple guesses with consistently low pegs on initial colors, deduce what's OUT
+                inferred_colors_out = set()
+                if len(actual_guesses) >= 4 and feedback_for_positions:
+                    # Get the FIRST 4 guesses which test the base color set
+                    first_4_guesses = actual_guesses[:4]
+                    first_4_feedback = feedback_for_positions[:4]
+
+                    # Colors in the first 4 guesses
+                    first_4_colors = set()
+                    for guess in first_4_guesses:
+                        first_4_colors.update(guess)
+
+                    # If the first 4 guesses consistently give ≤1 peg, 3+ of those colors are OUT
+                    first_4_pegs = [fb.get("correct_pegs", 0) for fb in first_4_feedback]
+                    max_pegs_first4 = max(first_4_pegs, default=0)
+                    avg_pegs_first4 = sum(first_4_pegs) / len(first_4_pegs) if first_4_pegs else 0
+
+                    # If first 4 guesses (all permutations of 4 colors) give max 1P, deduce:
+                    # Only 1 of those 4 colors is IN, the rest are OUT
+                    if max_pegs_first4 <= 1 and len(first_4_colors) == 4:
+                        colors_in_from_llm = set(result.get("colors_in", []))
+                        # If LLM thinks more than 1-2 are IN, it's wrong - mark most as OUT
+                        if len(colors_in_from_llm) >= 3:
+                            inferred_colors_out = first_4_colors - set(list(colors_in_from_llm)[:2])
+                            print(f"[Constraint Deduction] First 4 guesses max {max_pegs_first4}P → colors OUT: {inferred_colors_out}")
+
+                    # Second pattern: if feedback plateaus (same peg count across 3+ recent guesses),
+                    # and pegs are low, then those colors are likely exhausted
+                    if len(actual_guesses) >= 5:
+                        recent_5_feedback = feedback_for_positions[-5:]
+                        recent_5_pegs = [fb.get("correct_pegs", 0) for fb in recent_5_feedback]
+                        recent_5_guesses = actual_guesses[-5:]
+                        recent_5_colors = set()
+                        for guess in recent_5_guesses:
+                            recent_5_colors.update(guess)
+
+                        # If pegs plateau at low value (1-2), current search space is exhausted
+                        if len(set(recent_5_pegs)) == 1 and recent_5_pegs[0] <= 1:
+                            colors_in_from_llm = set(result.get("colors_in", []))
+                            initial_colors = set(actual_guesses[0]) if actual_guesses else set()
+                            # Old colors that don't help should be OUT
+                            old_unhelpful = initial_colors - colors_in_from_llm
+                            inferred_colors_out.update(old_unhelpful)
+                            if old_unhelpful:
+                                print(f"[Constraint Deduction] Plateaued at {recent_5_pegs[0]}P → mark OUT: {old_unhelpful}")
 
                 # Run position detection
                 if actual_guesses and feedback_for_positions:
@@ -374,6 +559,13 @@ Use it to build constraints progressively without restarting."""
 
                     if llm_locked_dict:
                         print(f"[Position Detection] After merge: {llm_locked_dict}")
+
+                    # Also merge inferred colors_out
+                    if inferred_colors_out:
+                        current_out = set(result.get("colors_out", []))
+                        current_out.update(inferred_colors_out)
+                        result["colors_out"] = list(current_out)
+                        print(f"[Constraint Deduction] Updated colors_out: {result['colors_out']}")
 
             # Ensure colors_in has at least num_pegs colors
             colors_in = result.get("colors_in", [])
@@ -417,6 +609,14 @@ Use it to build constraints progressively without restarting."""
                     f"{missing_count} remaining color(s) while keeping locked positions fixed."
                 )
 
+            # ⭐ PHASE 2: Track max feedback for Proposer's recovery logic
+            max_pegs_feedback = 0
+            if feedback_for_positions:
+                max_pegs_feedback = max(
+                    fb.get("correct_pegs", 0) for fb in feedback_for_positions
+                )
+            result["max_pegs_feedback"] = max_pegs_feedback
+
             # ⭐ UPDATE AGENT'S OWN MEMORY
             memory_entry = {
                 "round": round_num,
@@ -445,7 +645,7 @@ Use it to build constraints progressively without restarting."""
             while len(colors_in) < num_pegs and len(colors_in) < len(available_colors):
                 colors_in.append(available_colors[len(colors_in)])
 
-            fallback_result = {
+            result = {
                 "colors_in": colors_in[:num_pegs],
                 "colors_out": [],
                 "locked_positions": {},
@@ -455,20 +655,63 @@ Use it to build constraints progressively without restarting."""
                 "permutation_strategy": None,
             }
 
+            # ⭐ STILL RUN POSITION DETECTION even on LLM error!
+            # This is critical because position detection is algorithmic, not LLM-based
+            print(f"[Analyzer] ERROR PATH: Attempting position detection with guess_history")
+            if isinstance(guess_history, list) and len(guess_history) > 0:
+                print(f"[Analyzer] ERROR PATH: First entry: {guess_history[0] if guess_history else 'empty'}")
+
+                # Extract feedback values
+                feedback_for_positions = []
+                for i, g_entry in enumerate(guess_history):
+                    if isinstance(g_entry, dict) and "feedback" in g_entry:
+                        feedback_for_positions.append(g_entry["feedback"])
+                    else:
+                        feedback_for_positions.append({})
+
+                # Get actual guesses
+                actual_guesses = []
+                for g_entry in guess_history:
+                    if isinstance(g_entry, dict) and "guess" in g_entry:
+                        actual_guesses.append(g_entry["guess"])
+                    elif isinstance(g_entry, list):
+                        actual_guesses.append(g_entry)
+                    else:
+                        actual_guesses.append([])
+
+                print(f"[Analyzer] ERROR PATH: {len(actual_guesses)} guesses, {len(feedback_for_positions)} feedback")
+                # Run position detection
+                if actual_guesses and feedback_for_positions:
+                    try:
+                        detected_locked = self._detect_locked_positions(actual_guesses, feedback_for_positions)
+                        if detected_locked:
+                            result["locked_positions"] = detected_locked
+                            print(f"[Analyzer] ERROR PATH: Detected locked: {detected_locked}")
+                    except Exception as pd_e:
+                        print(f"[Analyzer] Position detection failed: {pd_e}")
+
             # ⭐ SAVE FALLBACK TO MEMORY TOO (even on error)
+            # ⭐ PHASE 2: Track max feedback in error path too
+            max_pegs_feedback = 0
+            if 'feedback_for_positions' in locals():
+                max_pegs_feedback = max(
+                    fb.get("correct_pegs", 0) for fb in feedback_for_positions if isinstance(fb, dict)
+                )
+            result["max_pegs_feedback"] = max_pegs_feedback
+
             fallback_memory = {
                 "round": round_num,
-                "colors_in": fallback_result["colors_in"],
-                "colors_out": fallback_result["colors_out"],
-                "locked_positions": fallback_result["locked_positions"],
-                "strategy": fallback_result["strategy"],
+                "colors_in": result["colors_in"],
+                "colors_out": result["colors_out"],
+                "locked_positions": result["locked_positions"],
+                "strategy": result["strategy"],
                 "near_solve_state": False,
             }
             self.analysis_history.append(fallback_memory)
-            print(f"[Agent Memory] SAVED FALLBACK Round {round_num}: error={str(e)[:60]}")
+            print(f"[Agent Memory] SAVED FALLBACK Round {round_num}: error={str(e)[:60]}, locked={result['locked_positions']}")
             print(f"[Agent Memory] Total history now: {len(self.analysis_history)} entries")
 
-            return fallback_result
+            return result
 
     def process(self, **kwargs) -> Dict[str, Any]:
         """Process analysis and strategy."""

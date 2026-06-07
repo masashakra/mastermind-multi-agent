@@ -53,29 +53,34 @@ class ProposerAgent(BaseAgent):
         if not available_colors:
             available_colors = ["red", "blue", "green", "yellow", "white", "black", "orange", "purple"]
 
-        system_prompt = f"""You are the Proposer on Team {self.team}. You propose the next guess.
+        system_prompt = f"""You are the Proposer on Team {self.team}. Propose the next guess.
+
+CRITICAL: Output ONLY valid JSON. NO comments, NO text before/after, NO // or /* */.
 
 MASTERMIND RULES:
-- Guess must be 5 colors from 8 available
+- Guess must be exactly 4 colors (NOT 5)
 - Colors can repeat
 - Use constraints and strategy to guide selection
 
-TASK:
-Given the strategy and constraints, propose the best guess with:
-- The actual guess (5 colors)
-- Rationale (why this guess follows the strategy)
-- Confidence (0-100%)
-- Expected information gain
-
-Format as JSON:
+OUTPUT FORMAT - STRICT JSON ONLY:
 {{
-  "guess": ["color1", "color2", "color3", "color4", "color5"],
-  "rationale": "detailed explanation of why this guess",
-  "confidence": 0-100,
-  "expected_info_gain": "what will we learn from this guess?",
-  "aligns_with_strategy": true|false,
+  "guess": ["color1", "color2", "color3", "color4"],
+  "rationale": "detailed explanation",
+  "confidence": 85,
+  "expected_info_gain": "what we learn",
+  "aligns_with_strategy": true,
   "alternatives_considered": ["alt1", "alt2"]
-}}"""
+}}
+
+RULES:
+- Output ONLY the JSON object
+- Guess must be exactly 4 colors
+- No markdown, code blocks, or explanations
+- No // or /* */ comments
+- All strings use double quotes
+- Booleans are true or false (no quotes)
+- Numbers are integers (0-100)
+- Proper JSON syntax required"""
 
         user_message = f"""Propose a guess:
 Strategy: {strategy}
@@ -87,17 +92,25 @@ Shared knowledge: {shared_knowledge or []}"""
             response = self.call_llm_conversation(system_prompt, user_message)
             proposal = self.parse_json_response(response)
 
+            # Check if parsing failed and retry
+            if proposal.get("error") == "Failed to parse JSON response":
+                print(f"[{self.name}] JSON parsing failed, retrying with stricter prompt...")
+                strict_system = system_prompt + "\n\nIMPORTANT: Return ONLY the JSON object, with NOTHING else before or after it."
+                strict_user = user_message + "\n\nRespond with JSON only:"
+                retry_response = self.call_llm_conversation(strict_system, strict_user)
+                proposal = self.parse_json_response(retry_response)
+
             # Validate guess
             guess = proposal.get("guess", [])
-            if len(guess) != 5 or not all(c in available_colors for c in guess):
-                proposal["validation_warning"] = "Guess format may be invalid"
+            if len(guess) != 4 or not all(c in available_colors for c in guess):
+                proposal["validation_warning"] = "Guess format may be invalid (expected 4 colors)"
 
             return proposal
         except Exception as e:
             print(f"[{self.name}] Error proposing guess: {e}")
             return {
                 "error": str(e),
-                "guess": available_colors[:5],
+                "guess": available_colors[:4],
                 "rationale": "Error generating proposal",
                 "confidence": 0,
                 "expected_info_gain": "",

@@ -167,15 +167,22 @@ Return ONLY valid JSON (no markdown):
             response = self.call_llm(prompt)
             result = self._parse_json_response(response)
 
+            # Provide intelligent fallback strategies when parsing fails
+            if not result or "strategy" not in result:
+                fallback_strategy = self._get_fallback_strategy(guess_history)
+                strategy = result.get("strategy", fallback_strategy)
+            else:
+                strategy = result.get("strategy")
+
             return {
-                "analysis": result.get("analysis", "Analysis failed"),
-                "strategy": result.get("strategy", "Strategy failed"),
+                "analysis": result.get("analysis", "Fallback analysis: Maximize information from feedback"),
+                "strategy": strategy,
             }
         except Exception as e:
             print(f"[{self.team_id} Analyser] LLM error in analyze: {e}")
             return {
                 "analysis": f"Error: {str(e)}",
-                "strategy": "Continue systematic color testing",
+                "strategy": self._get_fallback_strategy(guess_history),
             }
 
     def debate(
@@ -405,18 +412,57 @@ Return ONLY valid JSON:
 
         return "\n".join(lines)
 
+    def _get_fallback_strategy(self, guess_history: List[Dict[str, Any]]) -> str:
+        """Generate intelligent fallback strategy when LLM parsing fails."""
+        if not guess_history:
+            return "Start with four distinct colors to test which are in the code: red, blue, green, yellow."
+
+        # Analyze what we've learned
+        recent_guesses = guess_history[-3:] if len(guess_history) >= 3 else guess_history
+
+        # Count high-confidence colors from recent feedback
+        color_feedback = {}
+        for entry in recent_guesses:
+            feedback = entry.get("feedback", {})
+            pegs = feedback.get("correct_pegs", 0)
+            if pegs >= 3:  # At least 3 colors correct
+                guess = entry.get("guess", [])
+                for color in set(guess):
+                    color_feedback[color] = color_feedback.get(color, 0) + 1
+
+        if color_feedback:
+            confident_colors = sorted(color_feedback.items(), key=lambda x: -x[1])[:3]
+            color_list = [c[0] for c in confident_colors]
+            remaining = ['red', 'blue', 'green', 'yellow', 'black', 'white', 'orange', 'purple']
+            new_color = [c for c in remaining if c not in color_list][0] if len(color_list) < 4 else color_list[0]
+            return f"Test positions with high-confidence colors {color_list} and one new color to narrow down correct arrangement."
+
+        return "Test a new combination of colors not yet tried to maximize information gain."
+
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
-        """Extract JSON from LLM response."""
+        """Extract JSON from LLM response with robust error handling."""
+        import re
+
         try:
             if "{" in response:
                 start = response.find("{")
                 end = response.rfind("}") + 1
                 if start < end:
                     json_str = response[start:end]
-                    return json.loads(json_str)
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # Try fixing common issues
+                        # Fix unquoted keys: {key: -> {"key":
+                        json_str = re.sub(r'(\{|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', json_str)
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError:
+                            pass
         except (json.JSONDecodeError, ValueError):
             pass
 
+        # If parsing fails, return empty dict - caller will use defaults
         return {}
 
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
