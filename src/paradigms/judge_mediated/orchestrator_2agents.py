@@ -36,6 +36,17 @@ class TwoAgentOrchestrator:
         self.paradigm = "parallel_independent_racing"
         self.start_time = time.time()
 
+        # ⭐ CRITICAL FIX: Kill any existing server processes
+        print(f"[Orchestrator] Cleaning up any stale server processes...")
+        import subprocess
+        try:
+            # Kill processes using specific ports
+            for port in [8301, 8302, 8351, 8352]:
+                subprocess.run(f"lsof -ti :{port} | xargs kill -9", shell=True, timeout=2)
+        except:
+            pass
+        time.sleep(1)  # Wait for ports to be released by OS
+
         print(f"\n[Orchestrator] Starting Parallel Independent Racing — puzzle {puzzle['puzzle_id']}")
         print(f"[Orchestrator] Teams: {self.NUM_TEAMS}, Agents per team: 2")
         print(f"[Orchestrator] ⚡ Each team solves their own puzzle instance independently")
@@ -208,6 +219,15 @@ class TwoAgentOrchestrator:
             # ⭐ REMOVED: No longer storing analysis_history here!
             # Analyzer maintains its own memory now (stateful agent)
 
+            # ⭐ REFLECTION/LEARNING: Get last feedback for hypothesis validation
+            last_feedback = {}
+            if round_num > 1 and team_id in self.team_histories:
+                history = self.team_histories[team_id]
+                if history:
+                    last_entry = history[-1]
+                    last_feedback = last_entry.get("result", {})  # ⭐ FIX: stored as "result", not "feedback"
+                    print(f"[DEBUG] Team {team_id} Round {round_num}: last_feedback from history = {last_feedback}")
+
             # STEP 2: Call Proposer with strategy AND cumulative constraints
             proposer_msg = A2AMessage.request(
                 sender_id="orchestrator",
@@ -215,6 +235,7 @@ class TwoAgentOrchestrator:
                 action="propose_guess",
                 payload={
                     "strategy": analyzer_result,  # ⭐ Now includes cumulative_constraints
+                    "last_feedback": last_feedback,  # ⭐ NEW: For reflection/learning
                     "available_colors": self.puzzle.get("available_colors", []),
                     "num_pegs": self.puzzle.get("pegs", 4),
                     "round_num": round_num,

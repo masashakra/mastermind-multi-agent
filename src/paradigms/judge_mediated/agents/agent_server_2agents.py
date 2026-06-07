@@ -8,6 +8,8 @@ import asyncio
 from typing import Any, Dict
 import threading
 import time
+import socket
+import subprocess
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -17,6 +19,43 @@ import uvicorn
 from paradigms.judge_mediated.agents.analyzer_strategist import AnalyzerStrategistAgent
 from paradigms.judge_mediated.agents.proposer_agent import ProposerAgent
 from communication.a2a_message import A2AMessage, A2AStatus
+
+
+def _kill_port(port: int) -> None:
+    """⭐ CRITICAL FIX: Kill any existing process on this port."""
+    try:
+        # Use lsof to find process on port
+        result = subprocess.run(
+            f"lsof -ti :{port}",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    try:
+                        subprocess.run(f"kill -9 {pid}", shell=True, timeout=2)
+                        print(f"[PortCleanup] Killed process {pid} on port {port}")
+                    except:
+                        pass
+            time.sleep(0.5)  # Wait for port to be released
+    except Exception as e:
+        print(f"[PortCleanup] Warning: Could not clean port {port}: {e}")
+
+
+def _port_is_available(port: int, host: str = "127.0.0.1") -> bool:
+    """Check if a port is available."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result != 0  # Return True if NOT connected (port available)
+    except:
+        return False
 
 
 def create_analyzer_strategist_app(team_id: int, provider: str) -> FastAPI:
@@ -109,11 +148,15 @@ def create_proposer_app(team_id: int, provider: str) -> FastAPI:
             request_msg = A2AMessage.from_dict(body)
             payload = request_msg.payload
 
+            # ⭐ REFLECTION/LEARNING: Pass last_feedback for hypothesis validation
+            last_feedback = payload.get("last_feedback", {})
+
             result = agent.propose_guess(
                 strategy=payload.get("strategy", {}),
                 available_colors=payload.get("available_colors", []),
                 num_pegs=payload.get("num_pegs", 4),
-                round_num=payload.get("round_num", 1),  # ⭐ CRITICAL: Pass round_num for logging
+                round_num=payload.get("round_num", 1),
+                last_feedback=last_feedback,  # ⭐ NEW: For reflection/learning loop
             )
 
             response_msg = A2AMessage.response(
@@ -169,6 +212,20 @@ def start_agent_servers(
     print(f"  Analyzer-Strategist starting on port {analyzer_port}...")
     print(f"  Proposer starting on port {proposer_port}...")
 
+    # ⭐ CRITICAL FIX: Kill any existing processes on these ports
+    print(f"[AgentServer] Cleaning up ports {analyzer_port}, {proposer_port}...")
+    _kill_port(analyzer_port)
+    _kill_port(proposer_port)
+
+    # Wait for OS to release ports
+    time.sleep(0.5)
+
+    # Verify ports are available
+    if not _port_is_available(analyzer_port):
+        print(f"[AgentServer] WARNING: Port {analyzer_port} still in use, proceeding anyway...")
+    if not _port_is_available(proposer_port):
+        print(f"[AgentServer] WARNING: Port {proposer_port} still in use, proceeding anyway...")
+
     analyzer_app = create_analyzer_strategist_app(team_id=team_id, provider=provider)
     analyzer_config = uvicorn.Config(
         analyzer_app,
@@ -199,8 +256,24 @@ def start_agent_servers(
     analyzer_thread.start()
     proposer_thread.start()
 
-    # Wait longer for servers to initialize
-    time.sleep(3)
+    # Wait for servers to initialize and health check
+    print(f"[AgentServer] Waiting for Team {team_id} servers to initialize...")
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            import httpx
+            with httpx.Client() as client:
+                analyzer_resp = client.get(f"http://127.0.0.1:{analyzer_port}/health", timeout=2)
+                proposer_resp = client.get(f"http://127.0.0.1:{proposer_port}/health", timeout=2)
+                if analyzer_resp.status_code == 200 and proposer_resp.status_code == 200:
+                    print(f"[AgentServer] Team {team_id} servers health check OK!")
+                    break
+        except:
+            pass
+        if attempt < max_retries - 1:
+            time.sleep(0.5)
+        else:
+            print(f"[AgentServer] WARNING: Health check failed after {max_retries} attempts, proceeding anyway...")
 
     analyzer_url = f"http://127.0.0.1:{analyzer_port}"
     proposer_url = f"http://127.0.0.1:{proposer_port}"
