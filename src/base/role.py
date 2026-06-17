@@ -40,13 +40,9 @@ class ParadigmType(Enum):
     """Explicit paradigm types for multi-agent coordination"""
 
     BOSS_WORKER = "boss_worker"
-    ROUND_TABLE = "round_table"
-    JUDGE_MEDIATED = "judge_mediated"
-    DIRECT_ADVERSARIAL = "direct_adversarial"
-    MODERATOR_MEDIATED = "moderator_mediated"
     DIRECT_DEBATE = "direct_debate"
-    COOPETITION_CENTRALIZED = "coopetition_centralized"
-    COOPETITION_PEER_TO_PEER = "coopetition_peer_to_peer"
+    DIRECT_DEBATE_JUDGE_FEEDBACK = "direct_debate_judge_feedback"
+    ROUND_TABLE = "round_table"
 
     def __str__(self) -> str:
         return self.value
@@ -55,13 +51,9 @@ class ParadigmType(Enum):
         """Get human-readable description of the paradigm"""
         descriptions = {
             "boss_worker": "Centralized Boss orchestrates all workers via A2A protocol",
-            "round_table": "Peer agents call each other directly without a Boss coordinator",
-            "judge_mediated": "Judge evaluates and selects each agent's solution",
-            "direct_adversarial": "Agents compete directly against each other",
-            "moderator_mediated": "Moderator arbitrates and coordinates between agents",
             "direct_debate": "Agents debate and discuss solutions directly",
-            "coopetition_centralized": "2 teams collaborate on same puzzle with Judge overseeing debate (ReConcile approach)",
-            "coopetition_peer_to_peer": "2 teams collaborate on same puzzle with peer-to-peer debate and voting (ReConcile approach)"
+            "direct_debate_judge_feedback": "Judge evaluates and selects between debating agent proposals (with strict constraints)",
+            "round_table": "Peer agents call each other directly without a Boss coordinator",
         }
         return descriptions.get(self.value, "Unknown paradigm")
 
@@ -70,10 +62,7 @@ class ParadigmType(Enum):
         # Paradigms with A2A communication
         communicating = {
             ParadigmType.BOSS_WORKER,
-            ParadigmType.JUDGE_MEDIATED,
-            ParadigmType.MODERATOR_MEDIATED,
-            ParadigmType.COOPETITION_CENTRALIZED,
-            ParadigmType.COOPETITION_PEER_TO_PEER,
+            ParadigmType.DIRECT_DEBATE_JUDGE_FEEDBACK,
         }
         return self in communicating
 

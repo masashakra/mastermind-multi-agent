@@ -91,7 +91,7 @@ class DirectDebateOrchestrator:
         self.team_urls = start_agent_servers(
             provider=provider,
             registry_url=self.registry_url,
-            base_port=8501,  # 8501+ — avoids conflict with judge_mediated (8301) and boss_worker (8201)
+            base_port=8501,  # 8501+ — avoids conflict with boss_worker (8201)
             num_teams=num_teams,
             orchestrator_url=self.orchestrator_url,
         )

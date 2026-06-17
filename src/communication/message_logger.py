@@ -2,10 +2,10 @@
 Message Logger — Universal logging system for all paradigms.
 
 Comprehensive logging of all A2A messages and agent conversations across:
+- boss_worker (hierarchical orchestration with Boss coordinator)
+- direct_debate (direct agent-to-agent debate)
+- direct_debate_judge_feedback (judge-mediated debate with strict constraints)
 - round_table (peer-to-peer autonomous agents)
-- boss_worker (hierarchical orchestration)
-- direct_debate, judge_mediated, moderator_mediated (debate paradigms)
-- direct_adversarial (adversarial setup)
 
 All logs written to JSON for analysis and debugging.
 Each paradigm gets its own log file: logs/{puzzle_id}_{paradigm}_{provider}_messages.log
@@ -184,6 +184,26 @@ class MessageLogger:
             event_type=event_type,
             agent_name=agent_name,
             status="error",
+            error=error,
+            metadata=metadata,
+        )
+        self._add_entry(entry)
+
+    def log_custom_event(
+        self,
+        event_type: str,
+        agent_name: str,
+        status: str = "ok",
+        error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Log a custom event with arbitrary metadata."""
+        entry = LogEntry(
+            timestamp=time.time(),
+            datetime_str=datetime.now().isoformat(),
+            event_type=event_type,
+            agent_name=agent_name,
+            status=status,
             error=error,
             metadata=metadata,
         )

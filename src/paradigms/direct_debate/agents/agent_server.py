@@ -727,7 +727,7 @@ def _debate_with_peers(
 def start_agent_servers(
     provider: str,
     registry_url: str,
-    base_port: int = 8501,  # 8501+ — avoids conflict with judge_mediated (8301) and boss_worker (8201)
+    base_port: int = 8501,  # 8501+ — avoids conflict with boss_worker (8201)
     num_teams: int = 2,
     orchestrator_url: str = "",
 ) -> Dict[str, str]:
